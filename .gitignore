@@ -1,0 +1,6 @@
+node_modules/
+data/crm.json
+data/crm.json.tmp
+data/users.json
+data/users.json.tmp
+.env

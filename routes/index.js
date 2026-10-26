@@ -1,0 +1,22 @@
+const express = require('express')
+const authRoutes = require('./authRoutes')
+const crmRoutes = require('./crmRoutes')
+const maintenanceRoutes = require('./maintenanceRoutes')
+const userRoutes = require('./userRoutes')
+const leadWebhookRoutes = require('./leadWebhookRoutes')
+const installationRoutes = require('./installationRoutes')
+const applicationRoutes = require('./applicationRoutes')
+const leadRoutes = require('./leadRoutes')
+
+const router = express.Router()
+router.get('/health', (req, res) => res.json({ status: 'ok' }))
+router.use('/auth', authRoutes)
+router.use('/crm', crmRoutes)
+router.use('/maintenance', maintenanceRoutes)
+router.use('/users', userRoutes)
+router.use('/webhooks', leadWebhookRoutes)
+router.use('/installations', installationRoutes)
+router.use('/applications', applicationRoutes)
+router.use('/leads', leadRoutes)
+
+module.exports = router
