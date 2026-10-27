@@ -99,24 +99,35 @@ async function initializeAdmin() {
 
 async function findByUsername(username) {
   if (!config.localTestStorage) {
-    const user = await User.findOne({ username: username.trim().toLowerCase(), active: true })
+    const user = await User.findOne({
+      username: username.trim().toLowerCase(),
+      active: true,
+      deletedAt: { $exists: false },
+    })
       .select('+passwordHash')
       .lean()
     return user || null
   }
   const users = await readUsers()
-  return users.find((user) => user.username === username.trim().toLowerCase() && user.active !== false) || null
+  return users.find((user) => user.username === username.trim().toLowerCase() && user.active !== false && !user.deletedAt) || null
 }
 
-async function findAll() {
+async function findAll({ includeInactive = false } = {}) {
   if (!config.localTestStorage) {
-    const users = await User.find({ active: true }).lean()
+    const users = await User.find(includeInactive ? {} : { active: true, deletedAt: { $exists: false } }).lean()
     return users.map(publicUser)
   }
-  return (await readUsers()).filter((user) => user.active !== false).map(publicUser)
+  return (await readUsers()).filter((user) => includeInactive || (user.active !== false && !user.deletedAt)).map(publicUser)
 }
 
-async function create({ name, username, password, role, phone = '' }) {
+async function create({ name, username, password, role, phone = '', maxOpenLeads, serviceAreas = [], propertyTypes = [], minLeadScore, maxLeadScore }) {
+  const routing = {
+    ...(maxOpenLeads !== undefined ? { maxOpenLeads: Number(maxOpenLeads) } : {}),
+    serviceAreas: serviceAreas.map((item) => item.trim()),
+    propertyTypes: propertyTypes.map((item) => item.trim()),
+    ...(minLeadScore !== undefined ? { minLeadScore: Number(minLeadScore) } : {}),
+    ...(maxLeadScore !== undefined ? { maxLeadScore: Number(maxLeadScore) } : {}),
+  }
   if (!config.localTestStorage) {
     const normalizedUsername = username.trim().toLowerCase()
     const user = {
@@ -126,6 +137,7 @@ async function create({ name, username, password, role, phone = '' }) {
       role,
       phone: phone.trim(),
       active: true,
+      ...(role === 'employee' ? routing : {}),
       passwordHash: await hashPassword(password),
     }
     try {
@@ -154,6 +166,7 @@ async function create({ name, username, password, role, phone = '' }) {
     role,
     phone: phone.trim(),
     active: true,
+    ...(role === 'employee' ? routing : {}),
     passwordHash: await hashPassword(password),
     createdAt: new Date().toISOString(),
   }
@@ -162,4 +175,80 @@ async function create({ name, username, password, role, phone = '' }) {
   return publicUser(user)
 }
 
-module.exports = { create, findAll, findByUsername, hashPassword, initializeAdmin, publicUser, verifyPassword }
+async function updateRouting(id, updates) {
+  if (!config.localTestStorage) {
+    const user = await User.findOneAndUpdate({ id, role: 'employee', deletedAt: { $exists: false } }, { $set: updates }, { new: true, runValidators: true }).lean()
+    return user ? publicUser(user) : null
+  }
+  const users = await readUsers()
+  const user = users.find((item) => item.id === id && item.role === 'employee' && !item.deletedAt)
+  if (!user) return null
+  Object.assign(user, updates)
+  await writeUsers(users)
+  return publicUser(user)
+}
+
+async function updateProfile(id, updates) {
+  const { password, ...profile } = updates
+  if (password) profile.passwordHash = await hashPassword(password)
+  const unset = {}
+  for (const key of ['maxOpenLeads', 'minLeadScore', 'maxLeadScore']) {
+    if (profile[key] === null) {
+      delete profile[key]
+      unset[key] = 1
+    }
+  }
+  if (!config.localTestStorage) {
+    const user = await User.findOneAndUpdate(
+      { id, role: { $in: ['employee', 'technician', 'hr'] }, deletedAt: { $exists: false } },
+      { $set: profile, ...(Object.keys(unset).length ? { $unset: unset } : {}) },
+      { new: true, runValidators: true },
+    ).lean()
+    return user ? publicUser(user) : null
+  }
+  const users = await readUsers()
+  const user = users.find((item) => item.id === id && ['employee', 'technician', 'hr'].includes(item.role) && !item.deletedAt)
+  if (!user) return null
+  Object.assign(user, profile)
+  for (const key of Object.keys(unset)) delete user[key]
+  await writeUsers(users)
+  return publicUser(user)
+}
+
+async function softDelete(id) {
+  if (!config.localTestStorage) {
+    const user = await User.findOneAndUpdate(
+      { id, role: { $in: ['employee', 'technician', 'hr'] }, deletedAt: { $exists: false } },
+      { $set: { active: false, deletedAt: new Date() } },
+      { new: true, runValidators: true },
+    ).lean()
+    return user ? publicUser(user) : null
+  }
+  const users = await readUsers()
+  const user = users.find((item) => item.id === id && ['employee', 'technician', 'hr'].includes(item.role) && !item.deletedAt)
+  if (!user) return null
+  user.active = false
+  user.deletedAt = new Date().toISOString()
+  await writeUsers(users)
+  return publicUser(user)
+}
+
+async function restore(id) {
+  if (!config.localTestStorage) {
+    const user = await User.findOneAndUpdate(
+      { id, role: { $in: ['employee', 'technician', 'hr'] }, deletedAt: { $exists: true } },
+      { $set: { active: true }, $unset: { deletedAt: 1 } },
+      { new: true, runValidators: true },
+    ).lean()
+    return user ? publicUser(user) : null
+  }
+  const users = await readUsers()
+  const user = users.find((item) => item.id === id && ['employee', 'technician', 'hr'].includes(item.role) && item.deletedAt)
+  if (!user) return null
+  user.active = true
+  delete user.deletedAt
+  await writeUsers(users)
+  return publicUser(user)
+}
+
+module.exports = { create, findAll, findByUsername, hashPassword, initializeAdmin, publicUser, restore, softDelete, updateProfile, updateRouting, verifyPassword }

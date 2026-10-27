@@ -2,6 +2,8 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const config = require('../config')
 const CrmState = require('./CrmState')
+const { migrateCustomers } = require('../services/customerService')
+const { migrateApplications } = require('../config/applicationWorkflow')
 
 const dataFile = config.crmDataFile
 let pendingWrite = Promise.resolve()
@@ -11,13 +13,22 @@ const emptyData = {
   installations: [],
   maintenance: [],
   applications: [],
+  customers: [],
+  hrProfiles: [],
+  payroll: [],
+  visits: [],
 }
 
 async function findAll() {
   if (!config.localTestStorage) {
     const state = await CrmState.findById('primary').lean()
     if (!state) throw new Error('CRM database has not been initialized.')
-    return state.data
+    const data = state.data
+    if (!Array.isArray(data.customers)) data.customers = []
+    for (const [key, value] of Object.entries(emptyData)) {
+      if (!Array.isArray(data[key])) data[key] = value
+    }
+    return data
   }
   return JSON.parse(await fs.readFile(dataFile, 'utf8'))
 }
@@ -79,6 +90,10 @@ async function initialize() {
       { $setOnInsert: { data: emptyData, revision: 0 } },
       { upsert: true, runValidators: true },
     )
+    await update((data) => {
+      migrateCustomers(data)
+      migrateApplications(data)
+    })
     return
   }
   await fs.mkdir(path.dirname(dataFile), { recursive: true })
@@ -96,6 +111,10 @@ async function initialize() {
       changed = true
     }
   }
+  const original = JSON.stringify(data)
+  migrateCustomers(data)
+  migrateApplications(data)
+  changed ||= JSON.stringify(data) !== original
   if (changed) await replaceAll(data)
 }
 

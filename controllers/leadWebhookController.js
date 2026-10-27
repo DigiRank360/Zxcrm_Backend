@@ -46,13 +46,22 @@ async function graphLead(leadId) {
   const fields = Object.fromEntries(
     (Array.isArray(result.field_data) ? result.field_data : [])
       .filter((field) => typeof field?.name === 'string')
-      .map((field) => [field.name, field.values?.[0] || '']),
+      .map((field) => [
+        field.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, ''),
+        field.values?.[0] || '',
+      ]),
   )
+  const firstValue = (...keys) => keys.map((key) => fields[key]).find((value) => typeof value === 'string' && value.trim()) || ''
   return {
     id: result.id || leadId,
-    name: fields.full_name || fields.name || [fields.first_name, fields.last_name].filter(Boolean).join(' '),
-    phone: fields.phone_number || fields.phone || fields.mobile_phone,
-    email: fields.email || fields.email_address,
+    name: firstValue('full_name', 'name', 'your_name', 'customer_name') ||
+      [fields.first_name, fields.last_name].filter(Boolean).join(' '),
+    phone: firstValue('phone_number', 'phone', 'mobile_phone', 'mobile', 'telephone'),
+    email: firstValue('email', 'email_address'),
+    state: firstValue('state', 'region'),
+    city: firstValue('city', 'town'),
+    propertyType: firstValue('property_type', 'property'),
+    score: firstValue('score'),
     notes: [result.campaign_name, result.adset_name, result.ad_name].filter(Boolean).join(' / '),
   }
 }

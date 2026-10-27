@@ -1,0 +1,20 @@
+const express = require('express')
+const hrController = require('../controllers/hrController')
+const { allowRoles, authenticate } = require('../middleware/authMiddleware')
+
+const router = express.Router()
+router.use(authenticate)
+router.get('/me', allowRoles('employee', 'technician'), hrController.getMyProfile)
+router.patch('/me/bank-details', allowRoles('employee', 'technician'), hrController.updateMyBankDetails)
+router.post('/me/documents', allowRoles('employee', 'technician'), hrController.uploadMyDocument)
+router.get('/me/documents/:documentId/download', allowRoles('employee', 'technician'), hrController.downloadMyDocument)
+router.get('/employees', allowRoles('hr'), hrController.listEmployees)
+router.patch('/employees/:id', allowRoles('hr'), hrController.updateEmployee)
+router.patch('/employees/:id/bank-details', allowRoles('hr'), hrController.updateEmployeeBankDetails)
+router.post('/employees/:id/documents', allowRoles('hr'), hrController.uploadEmployeeDocumentByHr)
+router.get('/employees/:id/documents/:documentId/download', allowRoles('hr'), hrController.downloadEmployeeDocument)
+router.get('/payroll', allowRoles('hr'), hrController.listPayroll)
+router.post('/payroll', allowRoles('hr'), hrController.createPayroll)
+router.patch('/payroll/:id/paid', allowRoles('hr'), hrController.markPaid)
+
+module.exports = router

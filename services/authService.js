@@ -16,4 +16,10 @@ function findSession(token) {
   return token ? sessions.get(token) : undefined
 }
 
-module.exports = { findSession, login }
+function revokeUserSessions(userId) {
+  for (const [token, user] of sessions) {
+    if (user.id === userId) sessions.delete(token)
+  }
+}
+
+module.exports = { findSession, login, revokeUserSessions }

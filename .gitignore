@@ -1,4 +1,5 @@
 node_modules/
+.test-data/
 data/crm.json
 data/crm.json.tmp
 data/users.json
