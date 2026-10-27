@@ -1,23 +1,31 @@
 const crmModel = require('../models/crmModel')
+const { employeeOwnsInstallation, employeeOwnsTicket } = require('../services/accessService')
 
 function profileFor(data, customer, user) {
   const ownLeads = user.role === 'admin' ? data.leads : data.leads.filter((item) => item.agentId === user.id)
-  const ownTickets = user.role === 'admin' ? data.maintenance : data.maintenance.filter((item) => item.workerId === user.id)
+  const ownTickets = user.role === 'admin'
+    ? data.maintenance
+    : user.role === 'employee'
+      ? data.maintenance.filter((item) => employeeOwnsTicket(data, item, user.id))
+      : data.maintenance.filter((item) => item.workerId === user.id)
   const ownApplications = user.role === 'admin'
     ? data.applications.filter((item) => item.customerId === customer.id)
     : user.role === 'employee'
       ? data.applications.filter((item) => item.customerId === customer.id && item.assignedEmployeeId === user.id)
       : []
   const applicationIds = new Set(ownApplications.map((item) => item.id))
+  const ownInstallations = data.installations.filter((item) =>
+    item.customerId === customer.id &&
+    (user.role === 'admin' || (user.role === 'employee' &&
+      (applicationIds.has(item.applicationId) || employeeOwnsInstallation(data, item, user.id))) ||
+      (user.role === 'technician' && ownTickets.some((ticket) => ticket.installationId === item.id))))
   const owns = user.role === 'admin' ||
     ownLeads.some((item) => item.customerId === customer.id) ||
     ownTickets.some((item) => item.customerId === customer.id) ||
-    ownApplications.length > 0
+    ownApplications.length > 0 ||
+    ownInstallations.length > 0
   if (!owns) return null
-  const installations = data.installations.filter((item) =>
-    item.customerId === customer.id &&
-    (user.role === 'admin' || (user.role === 'employee' && applicationIds.has(item.applicationId)) ||
-      (user.role === 'technician' && ownTickets.some((ticket) => ticket.installationId === item.id))))
+  const installations = ownInstallations
   const leads = ownLeads.filter((item) => item.customerId === customer.id)
   const applications = ownApplications
   const tickets = user.role === 'admin' || user.role === 'technician'

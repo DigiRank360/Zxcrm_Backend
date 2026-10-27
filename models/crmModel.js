@@ -1,5 +1,6 @@
 const fs = require('node:fs/promises')
 const path = require('node:path')
+const mongoose = require('mongoose')
 const config = require('../config')
 const CrmState = require('./CrmState')
 const { migrateCustomers } = require('../services/customerService')
@@ -19,11 +20,42 @@ const emptyData = {
   visits: [],
 }
 
+const resourceKeys = Object.keys(emptyData)
+const resourceCollection = (key) => mongoose.connection.collection(`crm_${key}`)
+const metadataCollection = () => mongoose.connection.collection('crm_metadata')
+
+async function loadResourceData(session) {
+  const rows = await Promise.all(resourceKeys.map((key) =>
+    resourceCollection(key).findOne({ _id: 'primary' }, { session })))
+  return Object.fromEntries(resourceKeys.map((key, index) => [
+    key,
+    Array.isArray(rows[index]?.items) ? rows[index].items : [],
+  ]))
+}
+
+async function initializeResourceCollections() {
+  const metadata = await metadataCollection().findOne({ _id: 'primary' })
+  if (metadata?.resourcesInitialized) return metadata
+  const legacy = await CrmState.findById('primary').lean()
+  const data = legacy?.data || emptyData
+  await Promise.all(resourceKeys.map((key) =>
+    resourceCollection(key).replaceOne(
+      { _id: 'primary' },
+      { _id: 'primary', items: Array.isArray(data[key]) ? data[key] : [] },
+      { upsert: true },
+    )))
+  await metadataCollection().updateOne(
+    { _id: 'primary' },
+    { $set: { resourcesInitialized: true, revision: Number(legacy?.revision || 0) } },
+    { upsert: true },
+  )
+  return metadataCollection().findOne({ _id: 'primary' })
+}
+
 async function findAll() {
   if (!config.localTestStorage) {
-    const state = await CrmState.findById('primary').lean()
-    if (!state) throw new Error('CRM database has not been initialized.')
-    const data = state.data
+    await initializeResourceCollections()
+    const data = await loadResourceData()
     if (!Array.isArray(data.customers)) data.customers = []
     for (const [key, value] of Object.entries(emptyData)) {
       if (!Array.isArray(data[key])) data[key] = value
@@ -46,11 +78,14 @@ function enqueue(work) {
 
 async function replaceAll(data) {
   if (!config.localTestStorage) {
-    await CrmState.findOneAndUpdate(
-      { _id: 'primary' },
-      { $set: { data }, $inc: { revision: 1 } },
-      { upsert: true, new: true, runValidators: true },
-    )
+    await initializeResourceCollections()
+    await Promise.all(resourceKeys.map((key) =>
+      resourceCollection(key).replaceOne(
+        { _id: 'primary' },
+        { _id: 'primary', items: data[key] || [] },
+        { upsert: true },
+      )))
+    await metadataCollection().updateOne({ _id: 'primary' }, { $inc: { revision: 1 } })
     return
   }
   return enqueue(() => persist(data))
@@ -58,17 +93,25 @@ async function replaceAll(data) {
 
 async function update(mutator) {
   if (!config.localTestStorage) {
+    await initializeResourceCollections()
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const state = await CrmState.findById('primary').lean()
-      if (!state) throw new Error('CRM database has not been initialized.')
-      const data = state.data
+      const metadata = await metadataCollection().findOne({ _id: 'primary' })
+      const data = await loadResourceData()
       const result = await mutator(data)
-      const updated = await CrmState.findOneAndUpdate(
-        { _id: 'primary', revision: state.revision },
-        { $set: { data }, $inc: { revision: 1 } },
-        { new: true, runValidators: true },
-      ).lean()
-      if (updated) return result
+      const updated = await metadataCollection().findOneAndUpdate(
+        { _id: 'primary', revision: metadata.revision },
+        { $inc: { revision: 1 } },
+        { returnDocument: 'after', includeResultMetadata: true },
+      )
+      if (updated?.value) {
+        await Promise.all(resourceKeys.map((key) =>
+          resourceCollection(key).replaceOne(
+            { _id: 'primary' },
+            { _id: 'primary', items: data[key] || [] },
+            { upsert: true },
+          )))
+        return result
+      }
     }
     const error = new Error('CRM data changed concurrently. Please retry the request.')
     error.status = 409

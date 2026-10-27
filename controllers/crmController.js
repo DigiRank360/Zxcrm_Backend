@@ -1,6 +1,7 @@
 const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
+const { employeeOwnsInstallation, employeeOwnsTicket } = require('../services/accessService')
 
 const leadStatuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Converted'])
 
@@ -33,10 +34,12 @@ async function getCrm(req, res, next) {
       data.customers = (data.customers || []).filter((customer) => customerIds.has(customer.id))
     } else if (req.user.role === 'employee') {
       const applicationIds = new Set(data.applications.map((application) => application.id))
-      const installations = data.installations.filter((installation) => applicationIds.has(installation.applicationId))
+      const installations = data.installations.filter((installation) =>
+        applicationIds.has(installation.applicationId) || employeeOwnsInstallation(data, installation, req.user.id))
       data.installations = installations
       const installationIds = new Set(installations.map((installation) => installation.id))
-      data.maintenance = data.maintenance.filter((job) => installationIds.has(job.installationId))
+      data.maintenance = data.maintenance.filter((job) =>
+        installationIds.has(job.installationId) || employeeOwnsTicket(data, job, req.user.id))
       const customerIds = new Set([
         ...data.leads.map((lead) => lead.customerId).filter(Boolean),
         ...installations.map((installation) => installation.customerId).filter(Boolean),

@@ -423,6 +423,14 @@ test('lead routing matches geography, property and score with active capacity li
   assert.ok(profile)
   assert.equal(profile.leads.length, 1)
   assert.equal(profile.city, 'Pune')
+  const editedLead = await request(`/api/leads/${leads.body.leads[0].id}`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: JSON.stringify({ name: 'Edited Routed Customer', score: 88, notes: 'Follow up tomorrow' }),
+  })
+  assert.equal(editedLead.response.status, 200)
+  assert.equal(editedLead.body.name, 'Edited Routed Customer')
+  assert.equal(editedLead.body.score, 88)
 })
 
 test('only commissioning creates an installation and quarterly maintenance jobs', async () => {
@@ -500,6 +508,21 @@ test('employee creates a detailed service ticket, admin is read-only, and only a
   assert.ok(adminView.body.maintenance.some((item) => item.id === created.body.ticket.id))
   const employeeView = await request('/api/crm', { token: employeeToken })
   assert.ok(employeeView.body.maintenance.some((item) => item.id === created.body.ticket.id))
+  const otherEmployeeToken = (await signIn('other.employee', 'Other_Employee_Password_123!')).token
+  const crossEmployeeCreate = await request('/api/maintenance', {
+    method: 'POST', token: otherEmployeeToken,
+    body: JSON.stringify({
+      customerId: customer.id,
+      installationId: customer.installations[0].id,
+      title: 'Unauthorized ticket',
+      dueDate: '2026-11-03',
+    }),
+  })
+  assert.equal(crossEmployeeCreate.response.status, 403)
+  const crossEmployeePatch = await request(`/api/maintenance/${created.body.ticket.id}`, {
+    method: 'PATCH', token: otherEmployeeToken, body: JSON.stringify({ priority: 'Urgent' }),
+  })
+  assert.equal(crossEmployeePatch.response.status, 403)
   const noInstall = await request('/api/maintenance', { method: 'POST', token: employeeToken, body: JSON.stringify({ customerId: customer.id, title: 'x', dueDate: '2026-11-02' }) })
   assert.equal(noInstall.response.status, 400)
   const technicianCrm = await request('/api/crm', { token: technicianToken })
@@ -509,7 +532,6 @@ test('employee creates a detailed service ticket, admin is read-only, and only a
   const employeeProfile = await request(`/api/customers/${customer.id}`, { token: employeeToken })
   assert.equal(employeeProfile.response.status, 200)
   assert.ok(employeeProfile.body.applications.some((item) => item.applicationNumber === 'APP-QUARTERLY-1'))
-  const otherEmployeeToken = (await signIn('other.employee', 'Other_Employee_Password_123!')).token
   const isolated = await request(`/api/customers/${customer.id}`, { token: otherEmployeeToken })
   assert.equal(isolated.response.status, 404)
   const profileResponse = await request(`/api/customers/${customer.id}`, { token: technicianToken })
@@ -707,6 +729,28 @@ test('HR login manages monthly payroll with manual deductions and private salary
   assert.equal(employeeRows.response.status, 200)
   assert.equal(employeeRows.body.find((item) => item.id === employee.id).monthlySalary, 50000)
 
+  const OctoberAttendance = Array.from({ length: 31 }, (_, index) => {
+    const day = index + 1
+    const date = `2026-10-${String(day).padStart(2, '0')}`
+    return { day, date, weekday: new Date(`${date}T00:00:00.000Z`).getUTCDay() }
+  }).filter((item) => item.weekday !== 0).map(({ date }) => ({
+    id: `attendance-${date}`,
+    userId: employee.id,
+    employee: employee.name,
+    date,
+    checkIn: '09:00',
+    checkOut: '17:00',
+    checkInAt: `${date}T03:30:00.000Z`,
+    checkOutAt: `${date}T11:30:00.000Z`,
+    status: 'Present',
+  }))
+  const attendanceUpdate = await request('/api/crm/attendance', {
+    method: 'PUT',
+    token: employeeToken,
+    body: JSON.stringify(OctoberAttendance),
+  })
+  assert.equal(attendanceUpdate.response.status, 200)
+
   const run = await request('/api/hr/payroll', {
     method: 'POST',
     token: hrToken,
@@ -719,8 +763,8 @@ test('HR login manages monthly payroll with manual deductions and private salary
   assert.equal(run.response.status, 201)
   assert.equal(run.body.grossSalary, 50000)
   assert.equal(run.body.netSalary, 47500)
-  assert.equal(run.body.attendanceProration, false)
-  const employeeToken = (await signIn('dynamic.employee@example.com', 'Employee_Password_123!')).token
+  assert.equal(run.body.attendanceProration, true)
+  assert.equal(run.body.presentDays, 27)
   assert.equal((await request('/api/hr/payroll', { token: employeeToken })).response.status, 403)
 
   const paid = await request(`/api/hr/payroll/${run.body.id}/paid`, { method: 'PATCH', token: hrToken })

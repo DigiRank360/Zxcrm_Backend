@@ -3,7 +3,9 @@ const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
 const { privateDownloadUrl, signedUploadParameters } = require('../services/cloudinaryService')
 const { decryptBankDetails, encryptBankDetails } = require('../services/hrSensitiveData')
+const { calculatePayroll, validMonth: validPayrollMonth } = require('../services/payrollService')
 
+const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const documentCategories = new Set(['Identity proof', 'Bank proof'])
 const documentMimeTypes = {
   'application/pdf': { extension: 'pdf', signature: Buffer.from('%PDF-') },
@@ -14,7 +16,7 @@ const MAX_DOCUMENT_BYTES = 7 * 1024 * 1024
 const MAX_DOCUMENTS_PER_EMPLOYEE = 20
 
 function validMonth(value) {
-  return typeof value === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(value)
+  return validPayrollMonth(value)
 }
 
 function validDate(value) {
@@ -313,6 +315,27 @@ async function listPayroll(req, res, next) {
   }
 }
 
+async function previewPayroll(req, res, next) {
+  const { employeeId, month } = req.query
+  if (typeof employeeId !== 'string' || !validMonth(month)) {
+    return res.status(400).json({ error: 'Provide an employee and a valid YYYY-MM pay month.' })
+  }
+  try {
+    const [users, data] = await Promise.all([userModel.findAll(), crmModel.findAll()])
+    const employee = users.find((user) => user.id === employeeId && ['employee', 'technician'].includes(user.role))
+    const profile = (data.hrProfiles || []).find((item) => item.userId === employeeId)
+    if (!employee || !profile) return res.status(404).json({ error: 'Set up an active employee profile and monthly salary first.' })
+    res.json({
+      employeeId,
+      employeeName: employee.name,
+      month,
+      ...calculatePayroll({ attendance: data.attendance || [], employee: { ...employee, monthlySalary: profile.monthlySalary }, month, deductions: [] }),
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function createPayroll(req, res, next) {
   const { employeeId, month, deductions = [] } = req.body || {}
   if (typeof employeeId !== 'string' || !employeeId || !validMonth(month) ||
@@ -330,13 +353,12 @@ async function createPayroll(req, res, next) {
     const employee = users.find((user) => user.id === employeeId && ['employee', 'technician'].includes(user.role))
     const profile = (result.hrProfiles || []).find((item) => item.userId === employeeId)
     if (!employee || !profile) return res.status(400).json({ error: 'Set up an active employee profile and monthly salary before payroll.' })
-    const grossSalary = Number(profile.monthlySalary)
-    const normalizedDeductions = deductions.map((item) => ({
-      label: item.label.trim(),
-      amount: Math.round(Number(item.amount) * 100) / 100,
-    }))
-    const totalDeductions = Math.round(normalizedDeductions.reduce((sum, item) => sum + item.amount, 0) * 100) / 100
-    if (totalDeductions > grossSalary) return res.status(400).json({ error: 'Total deductions cannot exceed the monthly salary.' })
+    const calculation = calculatePayroll({
+      attendance: result.attendance || [],
+      employee: { ...employee, monthlySalary: profile.monthlySalary },
+      month,
+      deductions,
+    })
 
     const payroll = await crmModel.update((data) => {
       data.payroll ||= []
@@ -351,11 +373,7 @@ async function createPayroll(req, res, next) {
         employeeName: employee.name,
         month,
         currency: 'INR',
-        grossSalary,
-        attendanceProration: false,
-        deductions: normalizedDeductions,
-        totalDeductions,
-        netSalary: Math.round((grossSalary - totalDeductions) * 100) / 100,
+        ...calculation,
         status: 'Pending',
         createdAt: new Date().toISOString(),
       }
@@ -393,14 +411,94 @@ async function markPaid(req, res, next) {
   }
 }
 
+async function syncPayroll(req, res, next) {
+  try {
+    const [users, data] = await Promise.all([userModel.findAll(), crmModel.findAll()])
+    const current = (data.payroll || []).find((item) => item.id === req.params.id)
+    if (!current) return res.status(404).json({ error: 'Payroll record not found.' })
+    if (current.status === 'Paid') return res.status(409).json({ error: 'Paid payroll cannot be recalculated.' })
+    const employee = users.find((user) => user.id === current.employeeId)
+    const profile = (data.hrProfiles || []).find((item) => item.userId === current.employeeId)
+    if (!employee || !profile) return res.status(400).json({ error: 'Employee salary profile is no longer available.' })
+    const calculation = calculatePayroll({
+      attendance: data.attendance || [],
+      employee: { ...employee, monthlySalary: profile.monthlySalary },
+      month: current.month,
+      deductions: current.deductions || [],
+    })
+    const payroll = await crmModel.update((nextData) => {
+      const record = (nextData.payroll || []).find((item) => item.id === req.params.id)
+      if (!record || record.status === 'Paid') {
+        const error = new Error('This payroll cannot be recalculated.')
+        error.status = 409
+        throw error
+      }
+      Object.assign(record, calculation, { updatedAt: new Date().toISOString() })
+      return record
+    })
+    res.json(payroll)
+  } catch (error) {
+    next(error)
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[character]))
+}
+
+async function downloadPayrollSlip(req, res, next) {
+  try {
+    const data = await crmModel.findAll()
+    const record = (data.payroll || []).find((item) => item.id === req.params.id)
+    if (!record) return res.status(404).json({ error: 'Payroll record not found.' })
+    const deductions = (record.deductions || []).map((item) =>
+      `<tr><td>${escapeHtml(item.label)}</td><td>${money(item.amount)}</td></tr>`).join('')
+    const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Salary slip - ${escapeHtml(record.employeeName)} - ${escapeHtml(record.month)}</title>
+<style>
+body{font-family:Arial,sans-serif;color:#172554;background:#f8fafc;margin:0;padding:32px}
+.slip{max-width:760px;margin:auto;background:#fff;border:1px solid #dbeafe;border-radius:16px;padding:32px;box-shadow:0 10px 30px #0f172a12}
+h1{margin:0;color:#1d4ed8;font-size:26px}h2{font-size:16px;margin:28px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:8px}
+.muted{color:#64748b;font-size:13px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px}.label{color:#64748b;font-size:12px}.value{font-weight:700;margin-top:4px}
+table{width:100%;border-collapse:collapse;font-size:14px}td{padding:10px;border-bottom:1px solid #e2e8f0}td:last-child{text-align:right;font-weight:600}
+.total{display:flex;justify-content:space-between;background:#eff6ff;border-radius:10px;padding:16px;font-size:18px;font-weight:700;color:#1e40af;margin-top:18px}
+@media print{body{background:#fff;padding:0}.slip{border:0;box-shadow:none}}
+</style></head><body><main class="slip">
+<h1>ZX Solar CRM</h1><p class="muted">Monthly salary slip · ${escapeHtml(record.month)}</p>
+<div class="grid"><div><div class="label">Employee</div><div class="value">${escapeHtml(record.employeeName)}</div></div>
+<div><div class="label">Payment status</div><div class="value">${escapeHtml(record.status)}</div></div>
+<div><div class="label">Scheduled days</div><div class="value">${record.scheduledDays ?? '—'}</div></div>
+<div><div class="label">Payable days</div><div class="value">${record.payableDays ?? '—'}</div></div></div>
+<h2>Attendance summary</h2><table><tr><td>Present days</td><td>${record.presentDays ?? 0}</td></tr><tr><td>Half days</td><td>${record.halfDays ?? 0}</td></tr><tr><td>Absent / unpaid days</td><td>${record.absentDays ?? 0}</td></tr><tr><td>Attendance-based salary</td><td>${money(record.attendanceSalary ?? record.grossSalary)}</td></tr></table>
+<h2>Deductions</h2><table>${deductions || '<tr><td>No deductions</td><td>—</td></tr>'}</table>
+<div class="total"><span>Net pay</span><span>${money(record.netSalary)}</span></div>
+<p class="muted">Generated by ZX Solar CRM. This is a system-generated salary statement.</p>
+</main></body></html>`
+    res.set({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Disposition': `attachment; filename="salary-slip-${record.month}-${record.id}.html"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    res.send(html)
+  } catch (error) {
+    next(error)
+  }
+}
+
 module.exports = {
   createPayroll,
   downloadEmployeeDocument,
+  downloadPayrollSlip,
   downloadMyDocument,
   getMyProfile,
   listEmployees,
   listPayroll,
+  previewPayroll,
   markPaid,
+  syncPayroll,
   updateEmployee,
   updateEmployeeBankDetails,
   updateMyBankDetails,

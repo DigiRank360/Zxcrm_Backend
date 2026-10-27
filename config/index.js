@@ -16,6 +16,7 @@ module.exports = {
     webhookVerifyToken: process.env.META_WEBHOOK_VERIFY_TOKEN,
     leadAccessToken: process.env.META_LEAD_ACCESS_TOKEN,
     graphApiVersion: process.env.META_GRAPH_API_VERSION,
+    publicWebhookUrl: process.env.META_WEBHOOK_PUBLIC_URL,
   },
   leadWebhookSecrets: {
     website: process.env.WEBSITE_WEBHOOK_SECRET,

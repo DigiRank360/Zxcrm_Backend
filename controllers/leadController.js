@@ -3,6 +3,9 @@ const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
 
+const editableFields = ['name', 'phone', 'email', 'state', 'city', 'propertyType', 'score', 'notes', 'status', 'followUp']
+const statuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Converted'])
+
 async function autoAssign(req, res, next) {
   try {
     res.json(await leadService.autoAssign())
@@ -74,4 +77,56 @@ async function assign(req, res, next) {
   }
 }
 
-module.exports = { assign, autoAssign, importLeads }
+async function update(req, res, next) {
+  const updates = req.body || {}
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates) ||
+      Object.keys(updates).some((key) => !editableFields.includes(key))) {
+    return res.status(400).json({ error: 'Only lead profile, status, notes, and follow-up fields can be edited.' })
+  }
+  if (updates.status !== undefined && !statuses.has(updates.status)) {
+    return res.status(400).json({ error: 'Choose a valid lead status.' })
+  }
+  if (updates.name !== undefined && (typeof updates.name !== 'string' || !updates.name.trim() || updates.name.length > 150)) {
+    return res.status(400).json({ error: 'Lead name is required and must be 150 characters or fewer.' })
+  }
+  if (updates.phone !== undefined && (typeof updates.phone !== 'string' || !/^\+?[1-9]\d{7,14}$/.test(updates.phone.trim()))) {
+    return res.status(400).json({ error: 'Provide a valid lead phone number.' })
+  }
+  if (updates.score !== undefined && (!Number.isInteger(Number(updates.score)) || Number(updates.score) < 0 || Number(updates.score) > 100)) {
+    return res.status(400).json({ error: 'Lead score must be an integer from 0 to 100.' })
+  }
+  if (['email', 'state', 'city', 'propertyType', 'notes', 'followUp'].some((key) =>
+    updates[key] !== undefined && (typeof updates[key] !== 'string' || updates[key].length > 500))) {
+    return res.status(400).json({ error: 'Lead text fields must be valid strings of 500 characters or fewer.' })
+  }
+  try {
+    const updated = await crmModel.update((data) => {
+      const lead = data.leads.find((item) => item.id === req.params.id)
+      if (!lead) {
+        const error = new Error('Lead not found.')
+        error.status = 404
+        throw error
+      }
+      if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
+        const error = new Error('Employees can only edit their assigned leads.')
+        error.status = 403
+        throw error
+      }
+      const beforeStatus = lead.status
+      for (const key of editableFields) {
+        if (updates[key] !== undefined) lead[key] = key === 'name' || key === 'phone' ? updates[key].trim() : updates[key]
+      }
+      if (updates.score !== undefined) lead.score = Number(updates.score)
+      if (beforeStatus !== lead.status) {
+        const customer = (data.customers || []).find((item) => item.id === lead.customerId)
+        if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead status changed to ${lead.status}`)
+      }
+      return lead
+    })
+    res.json(updated)
+  } catch (error) {
+    next(error)
+  }
+}
+
+module.exports = { assign, autoAssign, importLeads, update }

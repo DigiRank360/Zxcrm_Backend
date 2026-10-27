@@ -131,16 +131,17 @@ async function whatsappEvent(req, res, next) {
 }
 
 async function integrations(req, res) {
+  const webhookBaseUrl = config.meta.publicWebhookUrl || `${req.protocol}://${req.get('host')}`
   res.json({
     metaLeadAds: {
       configured: Boolean(config.meta.appSecret && config.meta.webhookVerifyToken && config.meta.leadAccessToken && config.meta.graphApiVersion),
-      webhookUrl: `${req.protocol}://${req.get('host')}/api/webhooks/meta`,
-      verifyUrl: `${req.protocol}://${req.get('host')}/api/webhooks/meta`,
+      webhookUrl: `${webhookBaseUrl}/api/webhooks/meta`,
+      verifyUrl: `${webhookBaseUrl}/api/webhooks/meta`,
     },
     whatsapp: {
       configured: Boolean(config.meta.appSecret && config.meta.webhookVerifyToken),
-      webhookUrl: `${req.protocol}://${req.get('host')}/api/webhooks/whatsapp`,
-      verifyUrl: `${req.protocol}://${req.get('host')}/api/webhooks/whatsapp`,
+      webhookUrl: `${webhookBaseUrl}/api/webhooks/whatsapp`,
+      verifyUrl: `${webhookBaseUrl}/api/webhooks/whatsapp`,
     },
     website: { configured: Boolean(config.leadWebhookSecrets.website), endpoint: '/api/webhooks/leads/website' },
     referral: { configured: Boolean(config.leadWebhookSecrets.referral), endpoint: '/api/webhooks/leads/referral' },

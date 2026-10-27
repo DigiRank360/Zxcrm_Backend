@@ -14,7 +14,10 @@ router.patch('/employees/:id/bank-details', allowRoles('hr'), hrController.updat
 router.post('/employees/:id/documents', allowRoles('hr'), hrController.uploadEmployeeDocumentByHr)
 router.get('/employees/:id/documents/:documentId/download', allowRoles('hr'), hrController.downloadEmployeeDocument)
 router.get('/payroll', allowRoles('hr'), hrController.listPayroll)
+router.get('/payroll/preview', allowRoles('hr'), hrController.previewPayroll)
 router.post('/payroll', allowRoles('hr'), hrController.createPayroll)
+router.patch('/payroll/:id/sync', allowRoles('hr'), hrController.syncPayroll)
+router.get('/payroll/:id/slip', allowRoles('hr'), hrController.downloadPayrollSlip)
 router.patch('/payroll/:id/paid', allowRoles('hr'), hrController.markPaid)
 
 module.exports = router

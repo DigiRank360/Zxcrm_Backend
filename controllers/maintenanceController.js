@@ -2,6 +2,7 @@ const crmModel = require('../models/crmModel')
 const otpService = require('../services/otpService')
 const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
+const { employeeOwnsTicket, employeeOwnsInstallation } = require('../services/accessService')
 const crypto = require('node:crypto')
 
 function validDate(value) {
@@ -32,6 +33,11 @@ async function create(req, res, next) {
       if (!customer || !installation || installation.customerId !== customerId) {
         const error = new Error('Customer or installation not found.')
         error.status = 404
+        throw error
+      }
+      if (req.user.role === 'employee' && !employeeOwnsInstallation(data, installation, req.user.id)) {
+        const error = new Error('Employees can only create service tickets for their assigned installations.')
+        error.status = 403
         throw error
       }
       const created = {
@@ -86,6 +92,11 @@ async function assign(req, res, next) {
       if (found.status === 'Completed') {
         const error = new Error('Completed tickets cannot be reassigned or edited.')
         error.status = 409
+        throw error
+      }
+      if (req.user.role === 'employee' && !employeeOwnsTicket(data, found, req.user.id)) {
+        const error = new Error('Employees can only edit service tickets for their assigned installations.')
+        error.status = 403
         throw error
       }
       const original = JSON.stringify({

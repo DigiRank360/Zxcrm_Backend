@@ -23,7 +23,13 @@ async function create(req, res, next) {
     const id = crypto.randomUUID()
     const technicians = users.filter((user) => user.role === 'technician' && user.active !== false)
     const customerDetails = { name: customer.trim(), customer: customer.trim(), phone: phone.trim(), address: address.trim(), email, state, city, propertyType }
-    const installation = { id, ...customerDetails, installDate, status: 'Active' }
+    const installation = {
+      id,
+      ...customerDetails,
+      installDate,
+      status: 'Active',
+      ...(req.user.role === 'employee' ? { assignedEmployeeId: req.user.id } : {}),
+    }
     const tickets = Array.from({ length: 4 }, (_, index) => {
       const dueDate = new Date(`${installDate}T00:00:00.000Z`)
       dueDate.setUTCMonth(dueDate.getUTCMonth() + (index + 1) * 3)
