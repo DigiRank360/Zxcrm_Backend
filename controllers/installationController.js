@@ -58,4 +58,48 @@ async function create(req, res, next) {
   }
 }
 
-module.exports = { create }
+async function assignEmployee(req, res, next) {
+  const { employeeId } = req.body || {}
+  if (employeeId !== null && typeof employeeId !== 'string') {
+    return res.status(400).json({ error: 'Provide an employee ID or null to unassign.' })
+  }
+  try {
+    const users = await userModel.findAll()
+    const employee = employeeId === null ? null : users.find((user) => user.id === employeeId && user.role === 'employee')
+    if (employeeId !== null && !employee) {
+      return res.status(400).json({ error: 'Select an active employee.' })
+    }
+    const result = await crmModel.update((data) => {
+      const installation = data.installations.find((item) => item.id === req.params.installationId)
+      if (!installation) {
+        const error = new Error('Installation not found.')
+        error.status = 404
+        throw error
+      }
+      const application = (data.applications || []).find((item) => item.id === installation.applicationId)
+      installation.assignedEmployeeId = employee?.id || null
+      installation.assignedEmployeeName = employee?.name || ''
+      if (application) {
+        application.assignedEmployeeId = employee?.id || null
+        application.assignedEmployeeName = employee?.name || ''
+      }
+      if (installation.customerId) {
+        const customer = (data.customers || []).find((item) => item.id === installation.customerId)
+        if (customer) {
+          addCustomerEvent(
+            customer,
+            'installation',
+            installation.id,
+            employee ? `Installation assigned to ${employee.name}` : 'Installation unassigned',
+          )
+        }
+      }
+      return { installation, application: application || null }
+    })
+    res.json(result)
+  } catch (error) {
+    next(error)
+  }
+}
+
+module.exports = { assignEmployee, create }

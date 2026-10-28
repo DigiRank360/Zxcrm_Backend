@@ -6,7 +6,10 @@ const { decryptBankDetails, encryptBankDetails } = require('../services/hrSensit
 const { calculatePayroll, validMonth: validPayrollMonth } = require('../services/payrollService')
 
 const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const documentCategories = new Set(['Identity proof', 'Bank proof'])
+const documentCategories = new Set([
+  'Aadhaar Card', 'PAN Card', 'P.A.', 'T.A.', 'Bank Passbook', 'Last Joining Letter',
+  'Identity proof', 'Bank proof',
+])
 const documentMimeTypes = {
   'application/pdf': { extension: 'pdf', signature: Buffer.from('%PDF-') },
   'image/jpeg': { extension: 'jpg', signature: Buffer.from([0xff, 0xd8, 0xff]) },
@@ -47,7 +50,15 @@ function profileResponse(user, profile = {}, includeSalary = true) {
     ...(includeSalary ? {} : { monthlySalary: undefined }),
     ...(bankDetailsEncrypted ? { bankDetails: decryptBankDetails(bankDetailsEncrypted) } : { bankDetails: null }),
     documents: documents.map(publicDocument),
-    employee: { id: user.id, name: user.name, username: user.username, role: user.role },
+    employee: {
+      id: user.id,
+      reference: `EMP-${user.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`,
+      name: user.name,
+      username: user.username,
+      email: user.username.includes('@') ? user.username : '',
+      phone: user.phone || '',
+      role: user.role,
+    },
   }
 }
 
@@ -70,7 +81,7 @@ function bankDetailsFrom(input) {
 
 async function uploadPrivateDocument(userId, category, dataUrl, uploadedBy) {
   if (!documentCategories.has(category) || typeof dataUrl !== 'string') {
-    const error = new Error('Choose Identity proof or Bank proof and select a supported document.')
+    const error = new Error('Choose a valid document type and select a supported document.')
     error.status = 400
     throw error
   }
@@ -146,6 +157,56 @@ async function listEmployees(req, res, next) {
         ...user,
         ...profileResponse(user, profiles.get(user.id), true),
       })))
+  } catch (error) {
+    next(error)
+  }
+}
+
+const personalFields = ['presentAddress', 'temporaryAddress', 'motherName', 'fatherName']
+
+function personalDetailsFrom(input) {
+  const body = input || {}
+  const { dateOfBirth = '' } = body
+  if (personalFields.some((field) => body[field] !== undefined && (typeof body[field] !== 'string' || body[field].length > 300)) ||
+      !validDate(dateOfBirth) || (dateOfBirth && dateOfBirth > new Date().toISOString().slice(0, 10))) return null
+  return {
+    ...Object.fromEntries(personalFields.map((field) => [field, (body[field] || '').trim()])),
+    dateOfBirth,
+  }
+}
+
+async function savePersonalDetails(userId, details) {
+  return crmModel.update((data) => {
+    data.hrProfiles ||= []
+    let profile = data.hrProfiles.find((item) => item.userId === userId)
+    if (!profile) {
+      profile = { userId }
+      data.hrProfiles.push(profile)
+    }
+    Object.assign(profile, details, { updatedAt: new Date().toISOString() })
+    return details
+  })
+}
+
+async function updateMyPersonalDetails(req, res, next) {
+  const details = personalDetailsFrom(req.body)
+  if (!details) return res.status(400).json({ error: 'Provide valid addresses, parent names (max 300 characters) and a past date of birth.' })
+  try {
+    res.json(await savePersonalDetails(req.user.id, details))
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function updateEmployeePersonalDetails(req, res, next) {
+  const details = personalDetailsFrom(req.body)
+  if (!details) return res.status(400).json({ error: 'Provide valid addresses, parent names (max 300 characters) and a past date of birth.' })
+  try {
+    const users = await userModel.findAll({ includeInactive: true })
+    if (!users.some((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))) {
+      return res.status(404).json({ error: 'Employee account not found.' })
+    }
+    res.json(await savePersonalDetails(req.params.id, details))
   } catch (error) {
     next(error)
   }
@@ -329,7 +390,7 @@ async function previewPayroll(req, res, next) {
       employeeId,
       employeeName: employee.name,
       month,
-      ...calculatePayroll({ attendance: data.attendance || [], employee: { ...employee, monthlySalary: profile.monthlySalary }, month, deductions: [] }),
+      ...calculatePayroll({ attendance: data.attendance || [], holidays: data.holidays || [], employee: { ...employee, monthlySalary: profile.monthlySalary }, month, deductions: [] }),
     })
   } catch (error) {
     next(error)
@@ -355,6 +416,7 @@ async function createPayroll(req, res, next) {
     if (!employee || !profile) return res.status(400).json({ error: 'Set up an active employee profile and monthly salary before payroll.' })
     const calculation = calculatePayroll({
       attendance: result.attendance || [],
+      holidays: result.holidays || [],
       employee: { ...employee, monthlySalary: profile.monthlySalary },
       month,
       deductions,
@@ -422,6 +484,7 @@ async function syncPayroll(req, res, next) {
     if (!employee || !profile) return res.status(400).json({ error: 'Employee salary profile is no longer available.' })
     const calculation = calculatePayroll({
       attendance: data.attendance || [],
+      holidays: data.holidays || [],
       employee: { ...employee, monthlySalary: profile.monthlySalary },
       month: current.month,
       deductions: current.deductions || [],
@@ -489,6 +552,8 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:10px;border-
 }
 
 module.exports = {
+  updateEmployeePersonalDetails,
+  updateMyPersonalDetails,
   createPayroll,
   downloadEmployeeDocument,
   downloadPayrollSlip,

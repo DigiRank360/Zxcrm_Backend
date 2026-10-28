@@ -25,7 +25,7 @@ function attendanceValue(row) {
   return hours !== null && hours < 4 ? 0.5 : 1
 }
 
-function calculatePayroll({ attendance, employee, month, deductions }) {
+function calculatePayroll({ attendance, employee, month, deductions, holidays = [] }) {
   const rows = attendance.filter((row) =>
     row.date?.startsWith(`${month}-`) &&
     (row.userId ? row.userId === employee.id : row.employee === employee.name))
@@ -33,7 +33,9 @@ function calculatePayroll({ attendance, employee, month, deductions }) {
   for (const row of rows) byDate.set(row.date, Math.max(byDate.get(row.date) || 0, attendanceValue(row)))
   const presentDays = [...byDate.values()].filter((value) => value === 1).length
   const halfDays = [...byDate.values()].filter((value) => value === 0.5).length
-  const payableDays = presentDays + halfDays * 0.5
+  const paidHolidays = [...new Set(holidays.map((holiday) => holiday.date))].filter((date) =>
+    date?.startsWith(`${month}-`) && new Date(`${date}T00:00:00.000Z`).getUTCDay() !== 0 && !byDate.has(date)).length
+  const payableDays = presentDays + halfDays * 0.5 + paidHolidays
   const scheduledDays = scheduledWeekdays(month)
   const attendanceFactor = scheduledDays ? payableDays / scheduledDays : 0
   const grossSalary = Number(employee.monthlySalary)
@@ -53,7 +55,8 @@ function calculatePayroll({ attendance, employee, month, deductions }) {
     scheduledDays,
     presentDays,
     halfDays,
-    absentDays: Math.max(0, scheduledDays - presentDays - halfDays),
+    holidayDays: paidHolidays,
+    absentDays: Math.max(0, scheduledDays - presentDays - halfDays - paidHolidays),
     payableDays,
     attendanceFactor: Math.round(attendanceFactor * 10000) / 10000,
     attendanceSalary,

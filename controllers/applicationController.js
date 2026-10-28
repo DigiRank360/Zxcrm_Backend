@@ -1,7 +1,32 @@
 const crypto = require('node:crypto')
 const crmModel = require('../models/crmModel')
 const { addCustomerEvent, findOrCreateCustomer } = require('../services/customerService')
+const { privateDownloadUrl, uploadPrivateFile } = require('../services/privateDocumentService')
 const { approvalStages, normalizeSteps, stages } = require('../config/applicationWorkflow')
+
+const amountFields = ['totalPlantCost', 'subsidyAmount', 'advancePayment']
+
+function validAmount(value) {
+  if (value === '' || value === undefined || value === null) return true
+  return (typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')) &&
+    Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1000000000
+}
+
+// Returns normalized commercial fields, or an error message.
+function commercialFrom(input) {
+  const body = input || {}
+  if (!amountFields.every((field) => validAmount(body[field]))) return { error: 'Plant cost, subsidy and advance payment must be amounts of 0 or more.' }
+  if (body.paymentTerms !== undefined && (typeof body.paymentTerms !== 'string' || body.paymentTerms.length > 200)) {
+    return { error: 'Payment terms must be text up to 200 characters.' }
+  }
+  const values = Object.fromEntries(amountFields.map((field) => [
+    field, body[field] === '' || body[field] === undefined || body[field] === null ? '' : Math.round(Number(body[field]) * 100) / 100,
+  ]))
+  if (values.totalPlantCost !== '' && values.advancePayment !== '' && values.advancePayment > values.totalPlantCost) {
+    return { error: 'Advance payment cannot exceed the total plant cost.' }
+  }
+  return { values: { ...values, paymentTerms: (body.paymentTerms || '').trim() } }
+}
 
 async function create(req, res, next) {
   const application = req.body
@@ -15,9 +40,13 @@ async function create(req, res, next) {
         (step.startedAt !== undefined && typeof step.startedAt !== 'string'))) {
     return res.status(400).json({ error: 'Provide the consumer, application number, and all workflow steps.' })
   }
+  const commercial = commercialFrom(application)
+  if (commercial.error) return res.status(400).json({ error: commercial.error })
   try {
     const created = {
       ...application,
+      ...commercial.values,
+      ocrDocument: null,
       customer: application.customer.trim(),
       phone: application.phone.trim(),
       applicationNumber: application.applicationNumber.trim(),
@@ -193,4 +222,72 @@ async function decideApproval(req, res, next) {
   }
 }
 
-module.exports = { completeStep, create, decideApproval }
+function findAccessible(data, req) {
+  const found = data.applications.find((item) => item.id === req.params.id)
+  if (!found) {
+    const error = new Error('Solar application not found.')
+    error.status = 404
+    throw error
+  }
+  if (req.user.role !== 'admin' && found.assignedEmployeeId !== req.user.id) {
+    const error = new Error('You can only access applications assigned to you.')
+    error.status = 403
+    throw error
+  }
+  return found
+}
+
+async function updateCommercial(req, res, next) {
+  const commercial = commercialFrom(req.body)
+  if (commercial.error) return res.status(400).json({ error: commercial.error })
+  try {
+    const application = await crmModel.update((data) => {
+      const found = findAccessible(data, req)
+      Object.assign(found, commercial.values)
+      return found
+    })
+    res.json(application)
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function uploadOcrDocument(req, res, next) {
+  const { document, fileName } = req.body || {}
+  if (typeof fileName !== 'string' || !fileName.trim() || fileName.length > 200) {
+    return res.status(400).json({ error: 'Provide the document and its file name.' })
+  }
+  try {
+    const current = await crmModel.findAll()
+    findAccessible(current, req)
+    const stored = await uploadPrivateFile(document, `zxsolarcrm/application-ocr/${req.params.id}`)
+    const application = await crmModel.update((data) => {
+      const found = findAccessible(data, req)
+      found.ocrDocument = {
+        fileName: fileName.trim().replace(/[\\/]/g, '_'),
+        ...stored,
+        ocrStatus: 'Pending',
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: req.user.name,
+      }
+      const customer = (data.customers || []).find((item) => item.id === found.customerId)
+      if (customer) addCustomerEvent(customer, 'application', found.id, `OCR document uploaded for application ${found.applicationNumber}`)
+      return found
+    })
+    res.status(201).json(application)
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function downloadOcrDocument(req, res, next) {
+  try {
+    const found = findAccessible(await crmModel.findAll(), req)
+    if (!found.ocrDocument) return res.status(404).json({ error: 'No OCR document uploaded for this application.' })
+    res.json({ url: privateDownloadUrl(found.ocrDocument), fileName: found.ocrDocument.fileName })
+  } catch (error) {
+    next(error)
+  }
+}
+
+module.exports = { completeStep, create, decideApproval, downloadOcrDocument, updateCommercial, uploadOcrDocument }

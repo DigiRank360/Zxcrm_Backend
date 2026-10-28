@@ -386,6 +386,71 @@ test('solar applications and workflow stages persist through the API', async () 
   assert.equal(adminCannotCreate.response.status, 403)
 })
 
+test('application commercial details and OCR document are stored via Cloudinary', async () => {
+  const body = {
+    customer: 'Commercial Consumer', phone: '+919876543299', applicationNumber: 'APP-COMM-1',
+    totalPlantCost: 300000, subsidyAmount: 78000, paymentTerms: '50% advance, 50% on commissioning', advancePayment: 150000,
+    steps: Array.from({ length: 7 }, (_, index) => ({ startedAt: index === 0 ? new Date().toISOString() : '', completedAt: '' })),
+  }
+  assert.equal((await request('/api/applications', { method: 'POST', token: employeeToken, body: JSON.stringify({ ...body, applicationNumber: 'APP-COMM-BAD', advancePayment: 400000 }) })).response.status, 400)
+  const created = await request('/api/applications', { method: 'POST', token: employeeToken, body: JSON.stringify(body) })
+  assert.equal(created.response.status, 201)
+  assert.equal(created.body.advancePayment, 150000)
+  const updated = await request(`/api/applications/${created.body.id}/commercial`, {
+    method: 'PATCH', token: employeeToken, body: JSON.stringify({ ...body, advancePayment: 200000 }),
+  })
+  assert.equal(updated.body.advancePayment, 200000)
+
+  const oldEnv = { n: process.env.CLOUDINARY_CLOUD_NAME, k: process.env.CLOUDINARY_API_KEY, s: process.env.CLOUDINARY_API_SECRET, u: process.env.CLOUDINARY_URL }
+  process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud'
+  process.env.CLOUDINARY_API_KEY = 'test-key'
+  process.env.CLOUDINARY_API_SECRET = 'test-secret'
+  process.env.CLOUDINARY_URL = ''
+  const originalFetch = global.fetch
+  global.fetch = async (url, options) => String(url).startsWith('https://api.cloudinary.com/')
+    ? new Response(JSON.stringify({ public_id: 'zxsolarcrm/application-ocr/x/id', format: 'pdf' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    : originalFetch(url, options)
+  try {
+    const pdf = `data:application/pdf;base64,${Buffer.from('%PDF-1.4 test').toString('base64')}`
+    const path = `/api/applications/${created.body.id}/ocr-document`
+    assert.equal((await request(path, { method: 'POST', token: employeeToken, body: JSON.stringify({ fileName: 'a.txt', document: 'data:text/plain;base64,aGk=' }) })).response.status, 400)
+    const uploaded = await request(path, { method: 'POST', token: employeeToken, body: JSON.stringify({ fileName: 'bill.pdf', document: pdf }) })
+    assert.equal(uploaded.response.status, 201)
+    assert.equal(uploaded.body.ocrDocument.fileName, 'bill.pdf')
+    const link = await request(`${path}/download`, { token: adminToken })
+    assert.equal(link.response.status, 200)
+    assert.ok(link.body.url.startsWith('https://'))
+  } finally {
+    global.fetch = originalFetch
+    for (const [key, value] of Object.entries({ CLOUDINARY_CLOUD_NAME: oldEnv.n, CLOUDINARY_API_KEY: oldEnv.k, CLOUDINARY_API_SECRET: oldEnv.s, CLOUDINARY_URL: oldEnv.u })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('leads transfer between locations with tracked history', async () => {
+  const imported = await request('/api/leads/import', {
+    method: 'POST', token: adminToken,
+    body: JSON.stringify([{ name: 'Transfer Lead', phone: '+919811112233', source: 'CSV', state: 'Madhya Pradesh', city: 'Bhopal', propertyType: 'Residential', score: 50 }]),
+  })
+  assert.equal(imported.response.status, 201)
+  const lead = imported.body.leads[0]
+  const path = `/api/leads/${lead.id}/transfer-location`
+  assert.equal((await request(path, { method: 'PATCH', token: adminToken, body: JSON.stringify({ state: '', city: 'Delhi' }) })).response.status, 400)
+  assert.equal((await request(path, { method: 'PATCH', token: adminToken, body: JSON.stringify({ state: 'Madhya Pradesh', city: 'Bhopal' }) })).response.status, 400)
+  const moved = await request(path, { method: 'PATCH', token: adminToken, body: JSON.stringify({ state: 'Delhi', city: 'New Delhi', note: 'Customer relocated' }) })
+  assert.equal(moved.response.status, 200)
+  assert.equal(moved.body.lead.city, 'New Delhi')
+  assert.equal(moved.body.lead.transfers[0].fromCity, 'Bhopal')
+  assert.equal(moved.body.lead.transfers[0].transferredBy.length > 0, true)
+  const byEmployee = await request(path, { method: 'PATCH', token: employeeToken, body: JSON.stringify({ state: 'Delhi', city: 'Dwarka' }) })
+  assert.equal(byEmployee.response.status, moved.body.lead.agentId === employee.id ? 200 : 403)
+  const unassigned = await request(`/api/leads/${lead.id}/assign`, { method: 'PATCH', token: adminToken, body: JSON.stringify({ agentId: null }) })
+  assert.equal(unassigned.response.status, 200)
+  assert.equal((await request(path, { method: 'PATCH', token: employeeToken, body: JSON.stringify({ state: 'Delhi', city: 'Rohini' }) })).response.status, 403)
+})
+
 test('lead routing matches geography, property and score with active capacity limits', async () => {
   const configured = await request(`/api/users/${employee.id}/routing`, {
     method: 'PATCH', token: adminToken,
@@ -480,6 +545,45 @@ test('only commissioning creates an installation and quarterly maintenance jobs'
   assert.ok(commissionedCustomer)
   assert.equal(commissionedCustomer.applications[0].applicationNumber, 'APP-QUARTERLY-1')
   assert.equal(commissionedCustomer.installations.length, 1)
+
+  const pastInstallationEmployee = await request('/api/users', {
+    method: 'POST',
+    token: adminToken,
+    body: JSON.stringify({
+      name: 'Past Installation Employee',
+      username: 'past.installation.employee',
+      password: 'Past_Installation_Employee_123!',
+      role: 'employee',
+    }),
+  })
+  assert.equal(pastInstallationEmployee.response.status, 201)
+  const pastEmployeeToken = (await signIn('past.installation.employee', 'Past_Installation_Employee_123!')).token
+  const installation = employeeCrm.body.installations[0]
+  const unauthorizedAssignment = await request(`/api/installations/${installation.id}/assign`, {
+    method: 'PATCH',
+    token: pastEmployeeToken,
+    body: JSON.stringify({ employeeId: pastInstallationEmployee.body.id }),
+  })
+  assert.equal(unauthorizedAssignment.response.status, 403)
+  const assigned = await request(`/api/installations/${installation.id}/assign`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: JSON.stringify({ employeeId: pastInstallationEmployee.body.id }),
+  })
+  assert.equal(assigned.response.status, 200)
+  assert.equal(assigned.body.installation.assignedEmployeeId, pastInstallationEmployee.body.id)
+  assert.equal(assigned.body.application.assignedEmployeeId, pastInstallationEmployee.body.id)
+  const pastEmployeeCrm = await request('/api/crm', { token: pastEmployeeToken })
+  assert.ok(pastEmployeeCrm.body.installations.some((item) => item.id === installation.id))
+  assert.ok(pastEmployeeCrm.body.applications.some((item) => item.id === application.body.id))
+  const originalEmployeeCrm = await request('/api/crm', { token: employeeToken })
+  assert.equal(originalEmployeeCrm.body.installations.some((item) => item.id === installation.id), false)
+  const restored = await request(`/api/installations/${installation.id}/assign`, {
+    method: 'PATCH',
+    token: adminToken,
+    body: JSON.stringify({ employeeId: employee.id }),
+  })
+  assert.equal(restored.response.status, 200)
 })
 
 test('employee creates a detailed service ticket, admin is read-only, and only assigned technician can access it', async () => {
@@ -774,6 +878,34 @@ test('HR login manages monthly payroll with manual deductions and private salary
   assert.equal(JSON.stringify((await request('/api/crm', { token: hrToken })).body).includes('monthlySalary'), false)
 })
 
+test('holiday calendar is managed by admin, visible to employees, and reflected in crm data', async () => {
+  const employeeToken = (await signIn('DYNAMIC.EMPLOYEE@EXAMPLE.COM', 'Employee_Password_123!')).token
+  const body = JSON.stringify({ date: '2031-01-26', name: 'Republic Day' })
+  assert.equal((await request('/api/holidays', { method: 'POST', token: employeeToken, body })).response.status, 403)
+  assert.equal((await request('/api/holidays', { method: 'POST', token: adminToken, body: JSON.stringify({ date: 'bad', name: 'x' }) })).response.status, 400)
+  const created = await request('/api/holidays', { method: 'POST', token: adminToken, body })
+  assert.equal(created.response.status, 201)
+  assert.equal((await request('/api/holidays', { method: 'POST', token: adminToken, body })).response.status, 409)
+  const listed = await request('/api/holidays', { token: employeeToken })
+  assert.equal(listed.body.some((item) => item.date === '2031-01-26'), true)
+  assert.equal((await request('/api/crm', { token: employeeToken })).body.holidays.length, listed.body.length)
+  assert.equal((await request(`/api/holidays/${created.body.id}`, { method: 'DELETE', token: employeeToken })).response.status, 403)
+  assert.equal((await request(`/api/holidays/${created.body.id}`, { method: 'DELETE', token: adminToken })).response.status, 200)
+})
+
+test('employees save personal details to their own profile only', async () => {
+  const token = (await signIn('DYNAMIC.EMPLOYEE@EXAMPLE.COM', 'Employee_Password_123!')).token
+  const details = { presentAddress: 'A-1 Pune', temporaryAddress: 'B-2 Mumbai', fatherName: 'Ram', motherName: 'Sita', dateOfBirth: '1995-04-12' }
+  const saved = await request('/api/hr/me/personal-details', { method: 'PATCH', token, body: JSON.stringify(details) })
+  assert.equal(saved.response.status, 200)
+  const mine = await request('/api/hr/me', { token })
+  assert.equal(mine.body.motherName, 'Sita')
+  assert.equal(mine.body.dateOfBirth, '1995-04-12')
+  const bad = await request('/api/hr/me/personal-details', { method: 'PATCH', token, body: JSON.stringify({ ...details, dateOfBirth: '2999-01-01' }) })
+  assert.equal(bad.response.status, 400)
+  assert.equal((await request('/api/hr/employees/x/personal-details', { method: 'PATCH', token, body: JSON.stringify(details) })).response.status, 403)
+})
+
 test('Cloudinary visit photo uploads are authenticated and visit records are role-scoped', async () => {
   const token = (await signIn('DYNAMIC.EMPLOYEE@EXAMPLE.COM', 'Employee_Password_123!')).token
   const oldCredentials = {
@@ -912,7 +1044,7 @@ test('employees manage their own encrypted bank details and private HR documents
       method: 'POST',
       token: employeeToken,
       body: JSON.stringify({
-        category: 'Identity proof',
+        category: 'Aadhaar Card',
         document: `data:application/pdf;base64,${Buffer.from('%PDF-1.7 employee identity').toString('base64')}`,
       }),
     })
@@ -924,7 +1056,7 @@ test('employees manage their own encrypted bank details and private HR documents
     const ownProfile = await request('/api/hr/me', { token: employeeToken })
     assert.equal(ownProfile.response.status, 200)
     assert.equal(ownProfile.body.bankDetails.accountNumber, bankDetails.accountNumber)
-    assert.equal(ownProfile.body.documents[0].category, 'Identity proof')
+    assert.equal(ownProfile.body.documents[0].category, 'Aadhaar Card')
 
     const privateDownload = await request(`/api/hr/me/documents/${uploaded.body.id}/download`, { token: employeeToken })
     assert.equal(privateDownload.response.status, 200)
@@ -934,7 +1066,7 @@ test('employees manage their own encrypted bank details and private HR documents
     assert.equal(hrEmployees.response.status, 200)
     const hrEmployee = hrEmployees.body.find((item) => item.id === employee.id)
     assert.equal(hrEmployee.bankDetails.accountNumber, bankDetails.accountNumber)
-    assert.equal(hrEmployee.documents[0].category, 'Identity proof')
+    assert.equal(hrEmployee.documents[0].category, 'Aadhaar Card')
     const hrDownload = await request(`/api/hr/employees/${employee.id}/documents/${uploaded.body.id}/download`, { token: hrToken })
     assert.equal(hrDownload.response.status, 200)
     assert.equal((await request('/api/hr/employees', { token: employeeToken })).response.status, 403)

@@ -11,6 +11,7 @@ const customerRoutes = require('./customerRoutes')
 const hrRoutes = require('./hrRoutes')
 const uploadRoutes = require('./uploadRoutes')
 const visitRoutes = require('./visitRoutes')
+const holidayRoutes = require('./holidayRoutes')
 
 const router = express.Router()
 router.get('/health', (req, res) => res.json({ status: 'ok' }))
@@ -26,5 +27,6 @@ router.use('/customers', customerRoutes)
 router.use('/hr', hrRoutes)
 router.use('/uploads', uploadRoutes)
 router.use('/visits', visitRoutes)
+router.use('/holidays', holidayRoutes)
 
 module.exports = router

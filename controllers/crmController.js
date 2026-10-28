@@ -52,6 +52,7 @@ async function getCrm(req, res, next) {
     } else {
       data.customers ||= []
     }
+    data.holidays ||= []
     data.visits ||= []
     if (req.user.role === 'employee') data.visits = data.visits.filter((visit) => visit.userId === req.user.id)
     if (req.user.role === 'technician') data.visits = []

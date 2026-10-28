@@ -1,3 +1,4 @@
+const crypto = require('node:crypto')
 const leadService = require('../services/leadService')
 const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
@@ -77,6 +78,57 @@ async function assign(req, res, next) {
   }
 }
 
+async function transferLocation(req, res, next) {
+  const { state, city, note = '' } = req.body || {}
+  const valid = (value) => typeof value === 'string' && value.trim() && value.trim().length <= 100
+  if (!valid(state) || !valid(city) || typeof note !== 'string' || note.length > 300) {
+    return res.status(400).json({ error: 'Choose the destination state and city (note up to 300 characters).' })
+  }
+  const toState = state.trim()
+  const toCity = city.trim()
+  try {
+    const updated = await crmModel.update((data) => {
+      const lead = data.leads.find((item) => item.id === req.params.id)
+      if (!lead) {
+        const error = new Error('Lead not found.')
+        error.status = 404
+        throw error
+      }
+      if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
+        const error = new Error('Employees can only transfer their assigned leads.')
+        error.status = 403
+        throw error
+      }
+      if ((lead.state || '') === toState && (lead.city || '') === toCity) {
+        const error = new Error('The lead is already in this location.')
+        error.status = 400
+        throw error
+      }
+      const from = [lead.city, lead.state].filter(Boolean).join(', ') || 'Unassigned location'
+      const to = `${toCity}, ${toState}`
+      lead.transfers ||= []
+      lead.transfers.unshift({
+        id: crypto.randomUUID(),
+        fromState: lead.state || '',
+        fromCity: lead.city || '',
+        toState,
+        toCity,
+        note: note.trim(),
+        transferredBy: req.user.name,
+        transferredAt: new Date().toISOString(),
+      })
+      lead.state = toState
+      lead.city = toCity
+      const customer = (data.customers || []).find((item) => item.id === lead.customerId)
+      if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead transferred from ${from} to ${to} by ${req.user.name}`)
+      return lead
+    })
+    res.json({ lead: updated })
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function update(req, res, next) {
   const updates = req.body || {}
   if (!updates || typeof updates !== 'object' || Array.isArray(updates) ||
@@ -129,4 +181,4 @@ async function update(req, res, next) {
   }
 }
 
-module.exports = { assign, autoAssign, importLeads, update }
+module.exports = { assign, autoAssign, importLeads, transferLocation, update }
