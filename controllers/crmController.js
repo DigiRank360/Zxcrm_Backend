@@ -22,6 +22,11 @@ async function getCrm(req, res, next) {
     data.users = req.user.role === 'admin' ? users
       : req.user.role === 'employee' ? users.filter((user) => user.id === req.user.id || (user.role === 'technician' && user.active !== false))
         : users.filter((user) => user.id === req.user.id)
+    data.agents = ['admin', 'employee'].includes(req.user.role)
+      ? users
+        .filter((user) => user.role === 'employee' && user.active !== false)
+        .map(({ id, name }) => ({ id, name }))
+      : []
     if (req.user.role === 'employee') data.leads = data.leads.filter((lead) => lead.agentId === req.user.id)
     if (['technician', 'hr'].includes(req.user.role)) data.leads = []
     if (req.user.role === 'employee') data.applications = data.applications.filter((application) => application.assignedEmployeeId === req.user.id)

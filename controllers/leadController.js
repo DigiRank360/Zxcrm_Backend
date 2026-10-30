@@ -40,7 +40,17 @@ async function assign(req, res, next) {
         error.status = 404
         throw error
       }
+      if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
+        const error = new Error('Employees can only transfer their assigned leads.')
+        error.status = 403
+        throw error
+      }
       if (agentId === null) {
+        if (req.user.role !== 'admin') {
+          const error = new Error('Employees must transfer leads to another active employee.')
+          error.status = 400
+          throw error
+        }
         const wasAssigned = lead.agentId
         lead.agentId = null
         lead.assignmentReason = 'Manually unassigned by administrator.'
@@ -56,19 +66,35 @@ async function assign(req, res, next) {
         error.status = 400
         throw error
       }
-      if (lead.agentId === agent.id) return lead
-      const result = leadService.routeLead(lead, [agent], data.leads.filter((item) => item.id !== lead.id))
-      if (!result.agentId) {
-        const error = new Error(`Employee is not eligible: ${result.assignmentReason}`)
-        error.status = 409
+      if (req.user.role === 'employee' && agent.id === req.user.id) {
+        const error = new Error('Select a different employee to transfer this lead.')
+        error.status = 400
         throw error
+      }
+      if (lead.agentId === agent.id) return lead
+      let assignmentReason
+      if (req.user.role === 'employee') {
+        assignmentReason = `Transferred by ${req.user.name}.`
+      } else {
+        const result = leadService.routeLead(lead, [agent], data.leads.filter((item) => item.id !== lead.id))
+        if (!result.agentId) {
+          const error = new Error(`Employee is not eligible: ${result.assignmentReason}`)
+          error.status = 409
+          throw error
+        }
+        assignmentReason = `Manually assigned; ${result.assignmentReason}`
       }
       const changed = lead.agentId !== agent.id
       lead.agentId = agent.id
-      lead.assignmentReason = `Manually assigned; ${result.assignmentReason}`
+      lead.assignmentReason = assignmentReason
       if (changed) {
         const customer = (data.customers || []).find((item) => item.id === lead.customerId)
-        if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead manually assigned to ${agent.name}`)
+        if (customer) {
+          const event = req.user.role === 'employee'
+            ? `Lead transferred from ${req.user.name} to ${agent.name}`
+            : `Lead manually assigned to ${agent.name}`
+          addCustomerEvent(customer, 'lead', lead.id, event)
+        }
       }
       return lead
     })

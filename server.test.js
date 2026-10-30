@@ -29,7 +29,9 @@ let baseUrl
 let adminToken
 let technicianToken
 let employeeToken
+let recipientToken
 let employee
+let recipient
 let technician
 
 async function request(endpoint, { token, ...options } = {}) {
@@ -137,6 +139,21 @@ test('admin creates persisted employee and technician credentials', async () => 
   employeeToken = login.token
   assert.equal(login.user.id, employee.id)
   assert.equal(login.user.role, 'employee')
+
+  const createdRecipient = await request('/api/users', {
+    method: 'POST',
+    token: adminToken,
+    body: JSON.stringify({
+      name: 'Lead Recipient',
+      username: 'lead.recipient',
+      password: 'Recipient_Password_123!',
+      role: 'employee',
+      maxOpenLeads: 0,
+    }),
+  })
+  assert.equal(createdRecipient.response.status, 201)
+  recipient = createdRecipient.body
+  recipientToken = (await signIn('lead.recipient', 'Recipient_Password_123!')).token
 
   const duplicate = await request('/api/users', {
     method: 'POST',
@@ -449,6 +466,43 @@ test('leads transfer between locations with tracked history', async () => {
   const unassigned = await request(`/api/leads/${lead.id}/assign`, { method: 'PATCH', token: adminToken, body: JSON.stringify({ agentId: null }) })
   assert.equal(unassigned.response.status, 200)
   assert.equal((await request(path, { method: 'PATCH', token: employeeToken, body: JSON.stringify({ state: 'Delhi', city: 'Rohini' }) })).response.status, 403)
+})
+
+test('employees can transfer an owned lead to another employee dashboard', async () => {
+  const imported = await request('/api/leads/import', {
+    method: 'POST',
+    token: adminToken,
+    body: JSON.stringify([{ name: 'Employee Handoff', phone: '+919811112244', source: 'CSV' }]),
+  })
+  assert.equal(imported.response.status, 201)
+  const lead = imported.body.leads[0]
+  assert.equal(lead.agentId, employee.id)
+
+  const sourceCrm = await request('/api/crm', { token: employeeToken })
+  assert.equal(sourceCrm.response.status, 200)
+  assert.ok(sourceCrm.body.agents.some((agent) => agent.id === recipient.id && agent.name === recipient.name))
+
+  const transferred = await request(`/api/leads/${lead.id}/assign`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ agentId: recipient.id }),
+  })
+  assert.equal(transferred.response.status, 200)
+  assert.equal(transferred.body.lead.agentId, recipient.id)
+  assert.match(transferred.body.lead.assignmentReason, /Transferred by/)
+
+  const oldOwnerCrm = await request('/api/crm', { token: employeeToken })
+  assert.equal(oldOwnerCrm.body.leads.some((item) => item.id === lead.id), false)
+  const recipientCrm = await request('/api/crm', { token: recipientToken })
+  assert.equal(recipientCrm.response.status, 200)
+  assert.ok(recipientCrm.body.leads.some((item) => item.id === lead.id))
+
+  const previousOwnerTransfer = await request(`/api/leads/${lead.id}/assign`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ agentId: employee.id }),
+  })
+  assert.equal(previousOwnerTransfer.response.status, 403)
 })
 
 test('lead routing matches geography, property and score with active capacity limits', async () => {

@@ -7,6 +7,6 @@ router.post('/auto-assign', authenticate, allowRoles('admin'), leadController.au
 router.post('/import', authenticate, allowRoles('admin'), leadController.importLeads)
 router.patch('/:id', authenticate, allowRoles('admin', 'employee'), leadController.update)
 router.patch('/:id/transfer-location', authenticate, allowRoles('admin', 'employee'), leadController.transferLocation)
-router.patch('/:id/assign', authenticate, allowRoles('admin'), leadController.assign)
+router.patch('/:id/assign', authenticate, allowRoles('admin', 'employee'), leadController.assign)
 
 module.exports = router
