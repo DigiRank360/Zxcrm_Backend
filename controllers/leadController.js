@@ -27,6 +27,15 @@ async function importLeads(req, res, next) {
   }
 }
 
+async function createManual(req, res, next) {
+  try {
+    const lead = await leadService.createManual(req.body, req.user)
+    res.status(201).json({ lead })
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function assign(req, res, next) {
   const { agentId } = req.body || {}
   if (agentId !== null && typeof agentId !== 'string') return res.status(400).json({ error: 'Provide an employee ID or null to unassign.' })
@@ -207,4 +216,4 @@ async function update(req, res, next) {
   }
 }
 
-module.exports = { assign, autoAssign, importLeads, transferLocation, update }
+module.exports = { assign, autoAssign, createManual, importLeads, transferLocation, update }

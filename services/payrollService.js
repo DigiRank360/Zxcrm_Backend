@@ -18,11 +18,14 @@ function workedHours(row) {
   return Number.isFinite(seconds) && seconds > 0 ? seconds / 3600 : null
 }
 
-function attendanceValue(row) {
-  if (['Absent', 'Leave', 'Holiday'].includes(row.status)) return 0
-  if (row.status === 'Half-day') return 0.5
-  const hours = workedHours(row)
-  return hours !== null && hours < 4 ? 0.5 : 1
+function attendanceValue(rows) {
+  if (rows.some((row) => ['Present', 'On-field'].includes(row.status))) {
+    const hours = rows.reduce((total, row) => total + (workedHours(row) || 0), 0)
+    const hasTrackedHours = rows.some((row) => workedHours(row) !== null)
+    return hasTrackedHours && hours < 4 ? 0.5 : 1
+  }
+  if (rows.some((row) => row.status === 'Half-day')) return 0.5
+  return 0
 }
 
 function calculatePayroll({ attendance, employee, month, deductions, holidays = [] }) {
@@ -30,9 +33,13 @@ function calculatePayroll({ attendance, employee, month, deductions, holidays = 
     row.date?.startsWith(`${month}-`) &&
     (row.userId ? row.userId === employee.id : row.employee === employee.name))
   const byDate = new Map()
-  for (const row of rows) byDate.set(row.date, Math.max(byDate.get(row.date) || 0, attendanceValue(row)))
-  const presentDays = [...byDate.values()].filter((value) => value === 1).length
-  const halfDays = [...byDate.values()].filter((value) => value === 0.5).length
+  for (const row of rows) {
+    const dayRows = byDate.get(row.date) || []
+    byDate.set(row.date, [...dayRows, row])
+  }
+  const attendanceValues = [...byDate.values()].map(attendanceValue)
+  const presentDays = attendanceValues.filter((value) => value === 1).length
+  const halfDays = attendanceValues.filter((value) => value === 0.5).length
   const paidHolidays = [...new Set(holidays.map((holiday) => holiday.date))].filter((date) =>
     date?.startsWith(`${month}-`) && new Date(`${date}T00:00:00.000Z`).getUTCDay() !== 0 && !byDate.has(date)).length
   const payableDays = presentDays + halfDays * 0.5 + paidHolidays

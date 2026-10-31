@@ -468,6 +468,39 @@ test('leads transfer between locations with tracked history', async () => {
   assert.equal((await request(path, { method: 'PATCH', token: employeeToken, body: JSON.stringify({ state: 'Delhi', city: 'Rohini' }) })).response.status, 403)
 })
 
+test('employees can manually create leads assigned to themselves', async () => {
+  const created = await request('/api/leads/manual', {
+    method: 'POST',
+    token: employeeToken,
+    body: JSON.stringify({
+      name: 'Manual Queue Lead',
+      phone: '+919811112299',
+      email: 'manual@example.com',
+      state: 'Madhya Pradesh',
+      city: 'Bhopal',
+      propertyType: 'Residential',
+      notes: 'Asked for a solar quote.',
+    }),
+  })
+  assert.equal(created.response.status, 201)
+  assert.equal(created.body.lead.name, 'Manual Queue Lead')
+  assert.equal(created.body.lead.source, 'Manual')
+  assert.equal(created.body.lead.status, 'New')
+  assert.equal(created.body.lead.agentId, employee.id)
+  assert.equal(created.body.lead.city, 'Bhopal')
+
+  const employeeCrm = await request('/api/crm', { token: employeeToken })
+  assert.ok(employeeCrm.body.leads.some((lead) => lead.id === created.body.lead.id))
+
+  const invalid = await request('/api/leads/manual', {
+    method: 'POST',
+    token: employeeToken,
+    body: JSON.stringify({ name: '', phone: '' }),
+  })
+  assert.equal(invalid.response.status, 400)
+  assert.equal((await request('/api/leads/manual', { method: 'POST', token: adminToken, body: JSON.stringify({ name: 'Forbidden', phone: '+919811112200' }) })).response.status, 403)
+})
+
 test('employees can transfer an owned lead to another employee dashboard', async () => {
   const imported = await request('/api/leads/import', {
     method: 'POST',
@@ -891,7 +924,30 @@ test('HR login manages monthly payroll with manual deductions and private salary
     const day = index + 1
     const date = `2026-10-${String(day).padStart(2, '0')}`
     return { day, date, weekday: new Date(`${date}T00:00:00.000Z`).getUTCDay() }
-  }).filter((item) => item.weekday !== 0).map(({ date }) => ({
+  }).filter((item) => item.weekday !== 0).flatMap(({ date }) => date === '2026-10-01' ? [
+    {
+      id: `attendance-${date}-1`,
+      userId: employee.id,
+      employee: employee.name,
+      date,
+      checkIn: '09:00',
+      checkOut: '11:00',
+      checkInAt: `${date}T03:30:00.000Z`,
+      checkOutAt: `${date}T05:30:00.000Z`,
+      status: 'Present',
+    },
+    {
+      id: `attendance-${date}-2`,
+      userId: employee.id,
+      employee: employee.name,
+      date,
+      checkIn: '11:30',
+      checkOut: '13:30',
+      checkInAt: `${date}T06:00:00.000Z`,
+      checkOutAt: `${date}T08:00:00.000Z`,
+      status: 'Present',
+    },
+  ] : [{
     id: `attendance-${date}`,
     userId: employee.id,
     employee: employee.name,
@@ -901,7 +957,7 @@ test('HR login manages monthly payroll with manual deductions and private salary
     checkInAt: `${date}T03:30:00.000Z`,
     checkOutAt: `${date}T11:30:00.000Z`,
     status: 'Present',
-  }))
+  }])
   const attendanceUpdate = await request('/api/crm/attendance', {
     method: 'PUT',
     token: employeeToken,

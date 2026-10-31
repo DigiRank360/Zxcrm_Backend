@@ -65,6 +65,8 @@ function normalizeLead(payload, source) {
   }
   const optionalText = ['email', 'state', 'city', 'propertyType']
   if (optionalText.some((key) => payload[key] !== undefined && (typeof payload[key] !== 'string' || payload[key].length > 200)) ||
+      ((payload.notes !== undefined || payload.message !== undefined) &&
+        (typeof (payload.notes ?? payload.message) !== 'string' || (payload.notes ?? payload.message).length > 500)) ||
       (payload.score !== undefined && (!Number.isFinite(Number(payload.score)) || Number(payload.score) < 0 || Number(payload.score) > 100))) {
     const error = new Error('Lead email, geography, property type, or score is invalid.')
     error.status = 400
@@ -116,6 +118,25 @@ async function ingest(payloads, source) {
   })
 }
 
+async function createManual(payload, employee) {
+  if (!employee || employee.role !== 'employee') {
+    const error = new Error('Only employees can create a manual lead from the call queue.')
+    error.status = 403
+    throw error
+  }
+  const lead = normalizeLead(payload, 'Manual')
+  lead.agentId = employee.id
+  lead.assignmentReason = `Manually created by ${employee.name}.`
+  return crmModel.update((data) => {
+    const customer = findOrCreateCustomer(data, lead)
+    lead.customerId = customer.id
+    addCustomerEvent(customer, 'lead', lead.id, `Lead manually added by ${employee.name}`)
+    addCustomerEvent(customer, 'lead', lead.id, `Lead assigned to ${employee.name}`)
+    data.leads.push(lead)
+    return lead
+  })
+}
+
 async function autoAssign() {
   const users = await userModel.findAll()
   const agents = users.filter((user) => user.role === 'employee' && user.active !== false)
@@ -138,4 +159,4 @@ async function autoAssign() {
   })
 }
 
-module.exports = { autoAssign, ingest, routeLead }
+module.exports = { autoAssign, createManual, ingest, routeLead }
