@@ -22,4 +22,10 @@ function revokeUserSessions(userId) {
   }
 }
 
-module.exports = { findSession, login, revokeUserSessions }
+function updateUserSessions(updatedUser) {
+  for (const [token, user] of sessions) {
+    if (user.id === updatedUser.id) sessions.set(token, updatedUser)
+  }
+}
+
+module.exports = { findSession, login, revokeUserSessions, updateUserSessions }

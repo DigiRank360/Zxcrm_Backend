@@ -55,6 +55,42 @@ async function signIn(username, password) {
   return body
 }
 
+async function uploadApplicationStageDocument(applicationId, stage, token = employeeToken) {
+  const oldEnv = {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    apiKey: process.env.CLOUDINARY_API_KEY,
+    apiSecret: process.env.CLOUDINARY_API_SECRET,
+    url: process.env.CLOUDINARY_URL,
+  }
+  process.env.CLOUDINARY_CLOUD_NAME = 'test-cloud'
+  process.env.CLOUDINARY_API_KEY = 'test-key'
+  process.env.CLOUDINARY_API_SECRET = 'test-secret'
+  process.env.CLOUDINARY_URL = ''
+  const originalFetch = global.fetch
+  global.fetch = async (url, options) => String(url).startsWith('https://api.cloudinary.com/')
+    ? new Response(JSON.stringify({ public_id: 'zxsolarcrm/applications/test/stage/document', format: 'pdf' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    : originalFetch(url, options)
+  try {
+    const pdf = `data:application/pdf;base64,${Buffer.from('%PDF-1.4 test').toString('base64')}`
+    return await request(`/api/applications/${applicationId}/steps/${stage}/documents`, {
+      method: 'POST',
+      token,
+      body: JSON.stringify({ fileName: `stage-${stage}.pdf`, document: pdf }),
+    })
+  } finally {
+    global.fetch = originalFetch
+    for (const [key, value] of Object.entries({
+      CLOUDINARY_CLOUD_NAME: oldEnv.cloudName,
+      CLOUDINARY_API_KEY: oldEnv.apiKey,
+      CLOUDINARY_API_SECRET: oldEnv.apiSecret,
+      CLOUDINARY_URL: oldEnv.url,
+    })) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 before(async () => {
   await initializeData()
   server = app.listen(0)
@@ -341,12 +377,18 @@ test('solar applications and workflow stages persist through the API', async () 
   })
   assert.equal(created.response.status, 201)
   assert.equal(created.body.assignedEmployeeId, employee.id)
+  assert.equal((await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: employeeToken })).response.status, 409)
+  assert.equal((await uploadApplicationStageDocument(created.body.id, 1)).response.status, 409)
+  let uploaded = await uploadApplicationStageDocument(created.body.id, 0)
+  assert.equal(uploaded.response.status, 201)
+  assert.equal(uploaded.body.steps[0].documents.length, 1)
   const adminProgress = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: adminToken })
   assert.equal(adminProgress.response.status, 403)
   let completed = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: employeeToken })
   assert.equal(completed.response.status, 200)
   assert.ok(completed.body.steps[0].completedAt)
   assert.ok(completed.body.steps[1].startedAt)
+  await uploadApplicationStageDocument(created.body.id, 1)
   completed = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: employeeToken })
   assert.equal(completed.response.status, 200)
   const blocked = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: employeeToken })
@@ -371,6 +413,7 @@ test('solar applications and workflow stages persist through the API', async () 
   assert.equal(approved.response.status, 200)
   assert.equal(approved.body.steps[2].approvalStatus, 'Approved')
   assert.equal(approved.body.approvalHistory.length, 2)
+  await uploadApplicationStageDocument(created.body.id, 2)
   completed = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: employeeToken })
   assert.equal(completed.response.status, 200)
   assert.ok(completed.body.steps[3].startedAt)
@@ -389,14 +432,26 @@ test('solar applications and workflow stages persist through the API', async () 
   assert.equal(otherEmployee.response.status, 201)
   const otherEmployeeToken = (await signIn('other.employee', 'Other_Employee_Password_123!')).token
   assert.equal((await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: otherEmployeeToken })).response.status, 403)
+  const transferred = await request(`/api/applications/${created.body.id}/transfer`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ employeeId: otherEmployee.body.id }),
+  })
+  assert.equal(transferred.response.status, 200)
+  assert.equal(transferred.body.assignedEmployeeId, otherEmployee.body.id)
+  assert.equal(transferred.body.transferHistory[0].stage, 3)
+  assert.equal((await uploadApplicationStageDocument(created.body.id, 3, employeeToken)).response.status, 403)
+  await uploadApplicationStageDocument(created.body.id, 3, otherEmployeeToken)
+  const otherCompleted = await request(`/api/applications/${created.body.id}/complete-step`, { method: 'POST', token: otherEmployeeToken })
+  assert.equal(otherCompleted.response.status, 200)
 
   const crm = await request('/api/crm', { token: adminToken })
   assert.ok(crm.body.applications.some((item) => item.applicationNumber === 'APP-TEST-1'))
   const employeeCrm = await request('/api/crm', { token: employeeToken })
-  assert.ok(employeeCrm.body.applications.some((item) => item.applicationNumber === 'APP-TEST-1'))
+  assert.equal(employeeCrm.body.applications.some((item) => item.applicationNumber === 'APP-TEST-1'), false)
   assert.equal(employeeCrm.body.applications.some((item) => item.assignedEmployeeId === otherEmployee.body.id), false)
   const otherEmployeeCrm = await request('/api/crm', { token: otherEmployeeToken })
-  assert.deepEqual(otherEmployeeCrm.body.applications, [])
+  assert.ok(otherEmployeeCrm.body.applications.some((item) => item.applicationNumber === 'APP-TEST-1'))
   const adminCannotCreate = await request('/api/applications', {
     method: 'POST', token: adminToken, body: JSON.stringify(application),
   })
@@ -491,6 +546,39 @@ test('employees can manually create leads assigned to themselves', async () => {
 
   const employeeCrm = await request('/api/crm', { token: employeeToken })
   assert.ok(employeeCrm.body.leads.some((lead) => lead.id === created.body.lead.id))
+
+  const notInterested = await request(`/api/leads/${created.body.lead.id}`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ status: 'Not Interested' }),
+  })
+  assert.equal(notInterested.response.status, 200)
+  assert.ok((await request('/api/crm', { token: employeeToken })).body.leads.some((lead) => lead.id === created.body.lead.id && lead.status === 'Not Interested'))
+
+  const otherStatus = await request(`/api/leads/${created.body.lead.id}`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ status: 'Other', notes: 'Customer requested a callback by email.' }),
+  })
+  assert.equal(otherStatus.response.status, 200)
+  assert.equal(otherStatus.body.status, 'Other')
+
+  assert.equal((await request(`/api/leads/${created.body.lead.id}`, { method: 'DELETE', token: recipientToken })).response.status, 403)
+  const archived = await request(`/api/leads/${created.body.lead.id}`, { method: 'DELETE', token: employeeToken })
+  assert.equal(archived.response.status, 200)
+  assert.ok(archived.body.lead.deletedAt)
+  assert.equal((await request('/api/crm', { token: employeeToken })).body.leads.some((lead) => lead.id === created.body.lead.id), false)
+  assert.ok((await request('/api/crm', { token: adminToken })).body.leads.some((lead) => lead.id === created.body.lead.id && lead.deletedAt))
+  assert.equal((await request(`/api/leads/${created.body.lead.id}`, {
+    method: 'PATCH',
+    token: employeeToken,
+    body: JSON.stringify({ status: 'Interested' }),
+  })).response.status, 409)
+
+  const restored = await request(`/api/leads/${created.body.lead.id}/restore`, { method: 'POST', token: adminToken })
+  assert.equal(restored.response.status, 200)
+  assert.equal(restored.body.lead.deletedAt, undefined)
+  assert.ok((await request('/api/crm', { token: employeeToken })).body.leads.some((lead) => lead.id === created.body.lead.id))
 
   const invalid = await request('/api/leads/manual', {
     method: 'POST',
@@ -611,6 +699,8 @@ test('only commissioning creates an installation and quarterly maintenance jobs'
   assert.equal(application.response.status, 201)
   let completed
   for (let stage = 0; stage <= 9; stage += 1) {
+    const uploaded = await uploadApplicationStageDocument(application.body.id, stage)
+    assert.equal(uploaded.response.status, 201)
     if ([2, 8].includes(stage)) {
       const approval = await request(`/api/applications/${application.body.id}/approval`, {
         method: 'POST', token: adminToken,
@@ -862,6 +952,8 @@ test('commissioning creates the installation and quarterly maintenance schedule'
   assert.equal(application.response.status, 201)
   let commissioned
   for (let stage = 0; stage < 12; stage += 1) {
+    const uploaded = await uploadApplicationStageDocument(application.body.id, stage)
+    assert.equal(uploaded.response.status, 201)
     if ([2, 8].includes(stage)) {
       const approval = await request(`/api/applications/${application.body.id}/approval`, {
         method: 'POST',
@@ -1014,6 +1106,71 @@ test('employees save personal details to their own profile only', async () => {
   const bad = await request('/api/hr/me/personal-details', { method: 'PATCH', token, body: JSON.stringify({ ...details, dateOfBirth: '2999-01-01' }) })
   assert.equal(bad.response.status, 400)
   assert.equal((await request('/api/hr/employees/x/personal-details', { method: 'PATCH', token, body: JSON.stringify(details) })).response.status, 403)
+})
+
+test('employee contact changes require HR approval and HR account edits sync to My Profile', async () => {
+  const hrToken = (await signIn('hr.manager', 'HR_Manager_Password_123!')).token
+  const created = await request('/api/users', {
+    method: 'POST',
+    token: adminToken,
+    body: JSON.stringify({
+      name: 'Profile Sync Employee',
+      username: 'profile.sync',
+      password: 'Profile_Sync_Password_123!',
+      role: 'employee',
+      phone: '+919800001234',
+    }),
+  })
+  assert.equal(created.response.status, 201)
+  const token = (await signIn('profile.sync', 'Profile_Sync_Password_123!')).token
+  const requestChange = await request('/api/hr/me/contact-details', {
+    method: 'PATCH',
+    token,
+    body: JSON.stringify({ name: 'Requested Employee Name', phone: '+919800005678', contactEmail: 'contact@example.com' }),
+  })
+  assert.equal(requestChange.response.status, 200)
+  assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'Profile Sync Employee')
+
+  const pending = (await request('/api/hr/employees', { token: hrToken })).body.find((item) => item.id === created.body.id)
+  assert.equal(pending.pendingContactChange.name, 'Requested Employee Name')
+  const approved = await request(`/api/hr/employees/${created.body.id}/contact-details/review`, {
+    method: 'POST', token: hrToken, body: JSON.stringify({ decision: 'Approved' }),
+  })
+  assert.equal(approved.response.status, 200)
+  assert.equal(approved.body.employee.name, 'Requested Employee Name')
+  assert.equal(approved.body.employee.username, 'profile.sync')
+  assert.equal(approved.body.employee.email, 'contact@example.com')
+  assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'Requested Employee Name')
+  assert.equal((await request('/api/auth/me', { token })).body.user.name, 'Requested Employee Name')
+
+  const hrEdit = await request(`/api/hr/employees/${created.body.id}/account`, {
+    method: 'PATCH',
+    token: hrToken,
+    body: JSON.stringify({ name: 'HR Corrected Name', phone: '+919800009999', contactEmail: 'corrected@example.com' }),
+  })
+  assert.equal(hrEdit.response.status, 200)
+  assert.equal(hrEdit.body.employee.name, 'HR Corrected Name')
+  assert.equal(hrEdit.body.employee.phone, '+919800009999')
+  assert.equal(hrEdit.body.employee.email, 'corrected@example.com')
+  assert.equal(hrEdit.body.employee.username, 'profile.sync')
+  assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'HR Corrected Name')
+
+  const rejectedRequest = await request('/api/hr/me/contact-details', {
+    method: 'PATCH',
+    token,
+    body: JSON.stringify({ name: 'Rejected Name', phone: '', contactEmail: '' }),
+  })
+  assert.equal(rejectedRequest.response.status, 200)
+  const rejected = await request(`/api/hr/employees/${created.body.id}/contact-details/review`, {
+    method: 'POST', token: hrToken, body: JSON.stringify({ decision: 'Rejected' }),
+  })
+  assert.equal(rejected.response.status, 200)
+  assert.equal(rejected.body.employee.name, 'HR Corrected Name')
+  assert.equal((await request('/api/hr/me', { token })).body.pendingContactChange, undefined)
+  assert.equal((await request(`/api/hr/employees/${created.body.id}/account`, {
+    method: 'PATCH', token,
+    body: JSON.stringify({ name: 'Employee Cannot Directly Edit', phone: '', contactEmail: '' }),
+  })).response.status, 403)
 })
 
 test('Cloudinary visit photo uploads are authenticated and visit records are role-scoped', async () => {

@@ -3,7 +3,7 @@ const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
 const { addCustomerEvent, findOrCreateCustomer } = require('./customerService')
 
-const openLead = (lead) => lead.status !== 'Converted'
+const openLead = (lead) => !lead.deletedAt && lead.status !== 'Converted'
 
 function normalizeValue(value) {
   return String(value || '').trim().toLowerCase()

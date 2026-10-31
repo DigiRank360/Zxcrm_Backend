@@ -5,7 +5,7 @@ const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
 
 const editableFields = ['name', 'phone', 'email', 'state', 'city', 'propertyType', 'score', 'notes', 'status', 'followUp']
-const statuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Converted'])
+const statuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Other', 'Converted'])
 
 async function autoAssign(req, res, next) {
   try {
@@ -36,6 +36,53 @@ async function createManual(req, res, next) {
   }
 }
 
+async function softDelete(req, res, next) {
+  try {
+    const updated = await crmModel.update((data) => {
+      const lead = data.leads.find((item) => item.id === req.params.id)
+      if (!lead || lead.deletedAt) {
+        const error = new Error('Active lead not found.')
+        error.status = 404
+        throw error
+      }
+      if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
+        const error = new Error('Employees can only remove their own assigned leads.')
+        error.status = 403
+        throw error
+      }
+      lead.deletedAt = new Date().toISOString()
+      lead.deletedBy = req.user.id
+      const customer = (data.customers || []).find((item) => item.id === lead.customerId)
+      if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead moved to archive by ${req.user.name}`)
+      return lead
+    })
+    res.json({ lead: updated })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function restore(req, res, next) {
+  try {
+    const updated = await crmModel.update((data) => {
+      const lead = data.leads.find((item) => item.id === req.params.id && item.deletedAt)
+      if (!lead) {
+        const error = new Error('Archived lead not found.')
+        error.status = 404
+        throw error
+      }
+      delete lead.deletedAt
+      delete lead.deletedBy
+      const customer = (data.customers || []).find((item) => item.id === lead.customerId)
+      if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead restored by ${req.user.name}`)
+      return lead
+    })
+    res.json({ lead: updated })
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function assign(req, res, next) {
   const { agentId } = req.body || {}
   if (agentId !== null && typeof agentId !== 'string') return res.status(400).json({ error: 'Provide an employee ID or null to unassign.' })
@@ -47,6 +94,11 @@ async function assign(req, res, next) {
       if (!lead) {
         const error = new Error('Lead not found.')
         error.status = 404
+        throw error
+      }
+      if (lead.deletedAt) {
+        const error = new Error('Archived leads cannot be assigned.')
+        error.status = 409
         throw error
       }
       if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
@@ -129,6 +181,11 @@ async function transferLocation(req, res, next) {
         error.status = 404
         throw error
       }
+      if (lead.deletedAt) {
+        const error = new Error('Archived leads cannot be updated.')
+        error.status = 409
+        throw error
+      }
       if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
         const error = new Error('Employees can only transfer their assigned leads.')
         error.status = 403
@@ -194,6 +251,11 @@ async function update(req, res, next) {
         error.status = 404
         throw error
       }
+      if (lead.deletedAt) {
+        const error = new Error('Archived leads cannot be updated.')
+        error.status = 409
+        throw error
+      }
       if (req.user.role === 'employee' && lead.agentId !== req.user.id) {
         const error = new Error('Employees can only edit their assigned leads.')
         error.status = 403
@@ -216,4 +278,4 @@ async function update(req, res, next) {
   }
 }
 
-module.exports = { assign, autoAssign, createManual, importLeads, transferLocation, update }
+module.exports = { assign, autoAssign, createManual, importLeads, restore, softDelete, transferLocation, update }

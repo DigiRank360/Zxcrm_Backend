@@ -69,7 +69,7 @@ Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and `TWILIO_FROM_NUMBER`. Install
 
 Customer records are created or matched by normalized phone/email when leads, applications, and installations enter the CRM. Their history links these lifecycle records and service tickets. `GET /api/customers` and `GET /api/customers/:id` return a role-scoped 360 profile, including applications and commissioned installations assigned to the requesting employee.
 
-The solar application workflow is sequential: Registration, Application, Feasibility, Vendor Selection, Upload Agreement, Pre-site Inspection, Material Dispatch, Installation, Post-site Inspection, Project Commissioning, Subsidy Request, and Subsidy Disbursal. Employees create applications and may advance only applications assigned to their account; their CRM response contains only their applications and commissioned installations. Administrators can view all applications, but cannot create or advance them. Feasibility and Post-site Inspection require an administrator decision; decisions are retained with timestamp, actor, and note. Existing seven-step application records are migrated to the extended timeline. Completing Project Commissioning creates the active installation and its quarterly maintenance tickets, linked to the application and customer. The direct installation-creation endpoint is disabled to prevent bypassing this workflow. Use `POST /api/applications/:id/approval` with `{ "decision": "Approved", "note": "..." }` (or `Rejected`), then `POST /api/applications/:id/complete-step`.
+The solar application workflow is sequential: Registration, Application, Feasibility, Vendor Selection, Upload Agreement, Pre-site Inspection, Material Dispatch, Installation, Post-site Inspection, Project Commissioning, Subsidy Request, and Subsidy Disbursal. Employees create applications and may advance only applications assigned to their account; their CRM response contains only their applications and commissioned installations. Administrators can view all applications, but cannot create or advance them. Each stage requires at least one private PDF, JPEG, or PNG evidence document (maximum 7 MB each; up to 10 per stage) before it can be completed. Upload the current stage's file with `POST /api/applications/:id/steps/:stage/documents` and retrieve it with `GET /api/applications/:id/steps/:stage/documents/:documentId/download`. Employees and administrators can hand off the active stage with `PATCH /api/applications/:id/transfer` and `{ "employeeId": "..." }`; only an active employee can receive it, and the stage and transfer history are retained. Feasibility and Post-site Inspection require an administrator decision; decisions are retained with timestamp, actor, and note. Existing seven-step application records are migrated to the extended timeline. Completing Project Commissioning creates the active installation and its quarterly maintenance tickets, linked to the application and customer. The direct installation-creation endpoint is disabled to prevent bypassing this workflow. Use `POST /api/applications/:id/approval` with `{ "decision": "Approved", "note": "..." }` (or `Rejected`), then `POST /api/applications/:id/complete-step`.
 
 Administrators create and assign detailed customer service tickets through `POST /api/maintenance` and update active assignment/details through `PATCH /api/maintenance/:id`. Technicians only receive their assigned tickets and close work through the Twilio OTP flow. Generic CRM bulk writes cannot replace lifecycle records or bypass approval/OTP workflows.
 
@@ -96,15 +96,23 @@ Set `HR_DATA_ENCRYPTION_KEY` to a persistent 32-byte key encoded as 64 hexadecim
 - `POST /api/applications` — employee creates an application, assigned to their account
 - `POST /api/applications/:id/approval` — administrator approves or rejects the current gated stage
 - `POST /api/applications/:id/complete-step` — assigned employee completes the current stage
+- `POST /api/applications/:id/steps/:stage/documents` — assigned employee uploads required evidence to the current stage
+- `GET /api/applications/:id/steps/:stage/documents/:documentId/download` — retrieve a private stage document
+- `PATCH /api/applications/:id/transfer` — employee or administrator hands the active stage to an active employee
 - `GET /api/hr/me`, `PATCH /api/hr/me/bank-details`, and `POST /api/hr/me/documents` — employee/technician own records
+- `PATCH /api/hr/me/contact-details` — employee submits name, phone, and contact email changes for HR approval; login ID is unchanged
 - `GET /api/hr/me/documents/:documentId/download` — employee/technician own documents
-- `GET /api/hr/employees`, `PATCH /api/hr/employees/:id`, `PATCH /api/hr/employees/:id/bank-details`, and `POST /api/hr/employees/:id/documents` — HR
+- `GET /api/hr/employees`, `PATCH /api/hr/employees/:id/account`, and `POST /api/hr/employees/:id/contact-details/review` — HR manages employee contact details and approves/rejects employee requests
+- `PATCH /api/hr/employees/:id`, `PATCH /api/hr/employees/:id/bank-details`, and `POST /api/hr/employees/:id/documents` — HR
 - `GET /api/hr/employees/:id/documents/:documentId/download` — HR employee document access
 - `GET /api/hr/payroll`, `POST /api/hr/payroll`, and `PATCH /api/hr/payroll/:id/paid` — HR only
 - `POST /api/uploads` — authenticated Cloudinary image upload
 - `GET /api/visits` and `POST /api/visits` — employee field visit records
 - `POST /api/leads/auto-assign`
 - `POST /api/leads/import` and `PATCH /api/leads/:id/assign` — administrator only
+- `DELETE /api/leads/:id` — employee soft-archives an assigned lead; data is retained
+- `POST /api/leads/:id/restore` — administrator restores an archived lead
+- `POST /api/leads/manual` — employee creates a lead assigned to their own queue
 - `GET /api/customers` and `GET /api/customers/:id` — scoped customer 360 profiles
 - `POST /api/maintenance` and `PATCH /api/maintenance/:id` — administrator ticket handling
 - `GET` and `POST /api/webhooks/meta`

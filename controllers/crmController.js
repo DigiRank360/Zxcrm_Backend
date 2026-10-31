@@ -3,7 +3,7 @@ const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
 const { employeeOwnsInstallation, employeeOwnsTicket } = require('../services/accessService')
 
-const leadStatuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Converted'])
+const leadStatuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Other', 'Converted'])
 
 const permissions = {
   leads: ['admin', 'employee'],
@@ -27,7 +27,7 @@ async function getCrm(req, res, next) {
         .filter((user) => user.role === 'employee' && user.active !== false)
         .map(({ id, name }) => ({ id, name }))
       : []
-    if (req.user.role === 'employee') data.leads = data.leads.filter((lead) => lead.agentId === req.user.id)
+    if (req.user.role === 'employee') data.leads = data.leads.filter((lead) => lead.agentId === req.user.id && !lead.deletedAt)
     if (['technician', 'hr'].includes(req.user.role)) data.leads = []
     if (req.user.role === 'employee') data.applications = data.applications.filter((application) => application.assignedEmployeeId === req.user.id)
     if (!['admin', 'employee'].includes(req.user.role)) data.applications = []

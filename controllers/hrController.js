@@ -4,6 +4,7 @@ const userModel = require('../models/userModel')
 const { privateDownloadUrl, signedUploadParameters } = require('../services/cloudinaryService')
 const { decryptBankDetails, encryptBankDetails } = require('../services/hrSensitiveData')
 const { calculatePayroll, validMonth: validPayrollMonth } = require('../services/payrollService')
+const authService = require('../services/authService')
 
 const money = (value) => `₹${Number(value || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const documentCategories = new Set([
@@ -55,8 +56,9 @@ function profileResponse(user, profile = {}, includeSalary = true) {
       reference: `EMP-${user.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`,
       name: user.name,
       username: user.username,
-      email: user.username.includes('@') ? user.username : '',
+      email: user.contactEmail || (user.username.includes('@') ? user.username : ''),
       phone: user.phone || '',
+      contactEmail: user.contactEmail || '',
       role: user.role,
     },
   }
@@ -198,6 +200,37 @@ async function updateMyPersonalDetails(req, res, next) {
   }
 }
 
+function contactDetailsFrom(input) {
+  const { name, phone = '', contactEmail = '' } = input || {}
+  const validEmail = contactEmail === '' || (typeof contactEmail === 'string' &&
+    contactEmail.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail))
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 100 ||
+      typeof phone !== 'string' || phone.length > 50 ||
+      !validEmail) return null
+  return { name: name.trim(), phone: phone.trim(), contactEmail: contactEmail.trim().toLowerCase() }
+}
+
+async function updateMyContactDetails(req, res, next) {
+  const details = contactDetailsFrom(req.body)
+  if (!details) return res.status(400).json({ error: 'Provide a valid name, phone number, and contact email.' })
+  try {
+    const pendingContactChange = await crmModel.update((data) => {
+      data.hrProfiles ||= []
+      let profile = data.hrProfiles.find((item) => item.userId === req.user.id)
+      if (!profile) {
+        profile = { userId: req.user.id }
+        data.hrProfiles.push(profile)
+      }
+      profile.pendingContactChange = { ...details, requestedAt: new Date().toISOString() }
+      profile.updatedAt = new Date().toISOString()
+      return profile.pendingContactChange
+    })
+    res.json({ pendingContactChange })
+  } catch (error) {
+    next(error)
+  }
+}
+
 async function updateEmployeePersonalDetails(req, res, next) {
   const details = personalDetailsFrom(req.body)
   if (!details) return res.status(400).json({ error: 'Provide valid addresses, parent names (max 300 characters) and a past date of birth.' })
@@ -207,6 +240,62 @@ async function updateEmployeePersonalDetails(req, res, next) {
       return res.status(404).json({ error: 'Employee account not found.' })
     }
     res.json(await savePersonalDetails(req.params.id, details))
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function updateEmployeeAccount(req, res, next) {
+  const details = contactDetailsFrom(req.body)
+  if (!details) return res.status(400).json({ error: 'Provide a valid name, phone number, and contact email.' })
+  try {
+    const users = await userModel.findAll({ includeInactive: true })
+    const employee = users.find((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))
+    if (!employee) return res.status(404).json({ error: 'Employee account not found.' })
+
+    const updatedUser = await userModel.updateProfile(req.params.id, details)
+    if (!updatedUser) return res.status(404).json({ error: 'Active employee account not found.' })
+    authService.updateUserSessions(updatedUser)
+    const data = await crmModel.findAll()
+    const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id) || {}
+    res.json(profileResponse(updatedUser, profile, true))
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function reviewContactDetails(req, res, next) {
+  const { decision } = req.body || {}
+  if (!['Approved', 'Rejected'].includes(decision)) {
+    return res.status(400).json({ error: 'Choose Approved or Rejected.' })
+  }
+  try {
+    const employee = await userModel.findAll({ includeInactive: true }).then((users) =>
+      users.find((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role)))
+    const data = await crmModel.findAll()
+    const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
+    if (!employee) return res.status(404).json({ error: 'Employee account not found.' })
+    if (!profile?.pendingContactChange) return res.status(404).json({ error: 'No pending contact update found.' })
+
+    let updatedUser
+    if (decision === 'Approved') {
+      updatedUser = await userModel.updateProfile(req.params.id, contactDetailsFrom(profile.pendingContactChange))
+      if (!updatedUser) return res.status(404).json({ error: 'Active employee account not found.' })
+      authService.updateUserSessions(updatedUser)
+    } else {
+      updatedUser = employee
+    }
+
+    await crmModel.update((current) => {
+      const currentProfile = (current.hrProfiles || []).find((item) => item.userId === req.params.id)
+      if (currentProfile) {
+        delete currentProfile.pendingContactChange
+        currentProfile.lastContactChangeReview = { decision, reviewedAt: new Date().toISOString(), reviewedBy: req.user.name }
+      }
+    })
+    const latest = await crmModel.findAll()
+    const latestProfile = (latest.hrProfiles || []).find((item) => item.userId === req.params.id) || {}
+    res.json(profileResponse(updatedUser, latestProfile, true))
   } catch (error) {
     next(error)
   }
@@ -553,6 +642,9 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:10px;border-
 
 module.exports = {
   updateEmployeePersonalDetails,
+  updateEmployeeAccount,
+  updateMyContactDetails,
+  reviewContactDetails,
   updateMyPersonalDetails,
   createPayroll,
   downloadEmployeeDocument,

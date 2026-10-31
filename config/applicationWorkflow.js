@@ -16,7 +16,7 @@ const stages = [
 const approvalStages = [2, 8]
 
 function emptyStep(index) {
-  return { startedAt: '', completedAt: '', approvalStatus: approvalStages.includes(index) ? 'Pending' : 'Not required' }
+  return { startedAt: '', completedAt: '', documents: [], approvalStatus: approvalStages.includes(index) ? 'Pending' : 'Not required' }
 }
 
 function normalizeSteps(steps) {
@@ -25,6 +25,7 @@ function normalizeSteps(steps) {
     return steps.map((step, index) => ({
       ...emptyStep(index),
       ...step,
+      documents: Array.isArray(step.documents) ? step.documents : [],
       approvalStatus: approvalStages.includes(index) ? (step.approvalStatus || 'Pending') : 'Not required',
     }))
   }

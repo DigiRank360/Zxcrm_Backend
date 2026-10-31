@@ -1,5 +1,6 @@
 const crypto = require('node:crypto')
 const crmModel = require('../models/crmModel')
+const userModel = require('../models/userModel')
 const { addCustomerEvent, findOrCreateCustomer } = require('../services/customerService')
 const { privateDownloadUrl, uploadPrivateFile } = require('../services/privateDocumentService')
 const { approvalStages, normalizeSteps, stages } = require('../config/applicationWorkflow')
@@ -58,6 +59,7 @@ async function create(req, res, next) {
       approvalHistory: [],
       steps: normalizeSteps(application.steps).map((step, index) => ({
         ...step,
+        documents: [],
         startedAt: index === 0 ? new Date().toISOString() : '',
         completedAt: '',
         approvalStatus: approvalStages.includes(index) ? 'Pending' : 'Not required',
@@ -92,13 +94,13 @@ async function completeStep(req, res, next) {
         error.status = 404
         throw error
       }
-      if (req.user.role !== 'admin' && found.assignedEmployeeId !== req.user.id) {
-        const error = new Error('You can only advance applications assigned to you.')
+      if (req.user.role === 'admin') {
+        const error = new Error('Administrators can review and approve applications but cannot complete employee workflow steps.')
         error.status = 403
         throw error
       }
-      if (req.user.role === 'admin') {
-        const error = new Error('Administrators can review and approve applications but cannot complete employee workflow steps.')
+      if (found.assignedEmployeeId !== req.user.id) {
+        const error = new Error('You can only advance applications assigned to you.')
         error.status = 403
         throw error
       }
@@ -110,6 +112,11 @@ async function completeStep(req, res, next) {
       }
       if (approvalStages.includes(stage) && found.steps[stage].approvalStatus !== 'Approved') {
         const error = new Error('This workflow stage requires approval before it can be completed.')
+        error.status = 409
+        throw error
+      }
+      if (!found.steps[stage].documents?.length) {
+        const error = new Error('Upload at least one document for this stage before completing it.')
         error.status = 409
         throw error
       }
@@ -180,6 +187,118 @@ async function completeStep(req, res, next) {
         commissionedTickets: application.commissionedTickets,
       } : {}),
     })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function uploadStepDocument(req, res, next) {
+  const stage = Number(req.params.stage)
+  const { document, fileName } = req.body || {}
+  if (!Number.isInteger(stage) || stage < 0 || stage >= stages.length ||
+      typeof fileName !== 'string' || !fileName.trim() || fileName.length > 200) {
+    return res.status(400).json({ error: 'Provide a valid workflow stage, document, and file name.' })
+  }
+  try {
+    const snapshot = await crmModel.findAll()
+    const current = findAccessible(snapshot, req)
+    const activeStage = current.steps.findIndex((step) => !step.completedAt)
+    if (stage !== activeStage) return res.status(409).json({ error: 'Documents can only be uploaded to the current workflow stage.' })
+    if ((current.steps[stage].documents || []).length >= 10) {
+      return res.status(409).json({ error: 'A workflow stage can have up to 10 documents.' })
+    }
+    const stored = await uploadPrivateFile(document, `zxsolarcrm/applications/${req.params.id}/stages/${stage}`)
+    const application = await crmModel.update((data) => {
+      const found = findAccessible(data, req)
+      const currentStage = found.steps.findIndex((step) => !step.completedAt)
+      if (currentStage !== stage) {
+        const error = new Error('The active workflow stage changed. Refresh and retry.')
+        error.status = 409
+        throw error
+      }
+      const step = found.steps[stage]
+      step.documents ||= []
+      if (step.documents.length >= 10) {
+        const error = new Error('A workflow stage can have up to 10 documents.')
+        error.status = 409
+        throw error
+      }
+      step.documents.push({
+        id: crypto.randomUUID(),
+        fileName: fileName.trim().replace(/[\\/]/g, '_'),
+        ...stored,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: req.user.name,
+      })
+      return found
+    })
+    res.status(201).json(application)
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function downloadStepDocument(req, res, next) {
+  const stage = Number(req.params.stage)
+  if (!Number.isInteger(stage) || stage < 0 || stage >= stages.length) {
+    return res.status(400).json({ error: 'Provide a valid workflow stage.' })
+  }
+  try {
+    const found = findAccessible(await crmModel.findAll(), req)
+    const document = found.steps[stage]?.documents?.find((item) => item.id === req.params.documentId)
+    if (!document) return res.status(404).json({ error: 'Workflow document not found.' })
+    res.json({ url: privateDownloadUrl(document), fileName: document.fileName })
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function transfer(req, res, next) {
+  const { employeeId } = req.body || {}
+  if (typeof employeeId !== 'string' || !employeeId.trim()) {
+    return res.status(400).json({ error: 'Choose an employee to receive this application.' })
+  }
+  try {
+    const [users, snapshot] = await Promise.all([
+      userModel.findAll(),
+      crmModel.findAll(),
+    ])
+    const recipient = users.find((item) => item.id === employeeId && item.role === 'employee' && item.active !== false)
+    if (!recipient) return res.status(404).json({ error: 'Active employee account not found.' })
+    const current = findAccessible(snapshot, req)
+    if (current.assignedEmployeeId === recipient.id) {
+      return res.status(409).json({ error: 'This application is already assigned to that employee.' })
+    }
+    const stage = current.steps.findIndex((step) => !step.completedAt)
+    if (stage < 0) return res.status(409).json({ error: 'Completed applications cannot be transferred.' })
+    const application = await crmModel.update((data) => {
+      const found = findAccessible(data, req)
+      const activeStage = found.steps.findIndex((step) => !step.completedAt)
+      if (activeStage !== stage) {
+        const error = new Error('The active workflow stage changed. Refresh and retry.')
+        error.status = 409
+        throw error
+      }
+      const now = new Date().toISOString()
+      found.transferHistory ||= []
+      found.transferHistory.push({
+        stage,
+        stageName: stages[stage].title,
+        fromEmployeeId: found.assignedEmployeeId,
+        fromEmployeeName: found.assignedEmployeeName,
+        toEmployeeId: recipient.id,
+        toEmployeeName: recipient.name,
+        transferredById: req.user.id,
+        transferredByName: req.user.name,
+        transferredAt: now,
+      })
+      found.assignedEmployeeId = recipient.id
+      found.assignedEmployeeName = recipient.name
+      const customer = (data.customers || []).find((item) => item.id === found.customerId)
+      if (customer) addCustomerEvent(customer, 'application', found.id, `${stages[stage].title} transferred to ${recipient.name}`)
+      return found
+    })
+    res.json(application)
   } catch (error) {
     next(error)
   }
@@ -290,4 +409,14 @@ async function downloadOcrDocument(req, res, next) {
   }
 }
 
-module.exports = { completeStep, create, decideApproval, downloadOcrDocument, updateCommercial, uploadOcrDocument }
+module.exports = {
+  completeStep,
+  create,
+  decideApproval,
+  downloadOcrDocument,
+  downloadStepDocument,
+  transfer,
+  updateCommercial,
+  uploadOcrDocument,
+  uploadStepDocument,
+}
