@@ -1155,7 +1155,27 @@ test('HR account edits sync to the employee read-only profile', async () => {
   assert.equal(hrEdit.body.employee.phone, '+919800009999')
   assert.equal(hrEdit.body.employee.email, 'corrected@example.com')
   assert.equal(hrEdit.body.employee.username, 'profile.sync')
+  assert.equal(hrEdit.body.profileEditLocked, true)
   assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'HR Corrected Name')
+  const lockedAccountEdit = await request(`/api/hr/employees/${created.body.id}/account`, {
+    method: 'PATCH',
+    token: hrToken,
+    body: JSON.stringify({ name: 'Updated Again', phone: '', contactEmail: '' }),
+  })
+  assert.equal(lockedAccountEdit.response.status, 409)
+  const editingEnabled = await request(`/api/hr/employees/${created.body.id}/profile-edit`, {
+    method: 'POST',
+    token: hrToken,
+  })
+  assert.equal(editingEnabled.response.status, 200)
+  assert.equal(editingEnabled.body.profileEditLocked, false)
+  const unlockedAccountEdit = await request(`/api/hr/employees/${created.body.id}/account`, {
+    method: 'PATCH',
+    token: hrToken,
+    body: JSON.stringify({ name: 'Updated Again', phone: '', contactEmail: '' }),
+  })
+  assert.equal(unlockedAccountEdit.response.status, 200)
+  assert.equal(unlockedAccountEdit.body.employee.name, 'Updated Again')
   assert.equal((await request(`/api/hr/employees/${created.body.id}/account`, {
     method: 'PATCH', token,
     body: JSON.stringify({ name: 'Employee Cannot Directly Edit', phone: '', contactEmail: '' }),
@@ -1247,6 +1267,11 @@ test('employees view encrypted bank details and submit private HR documents', as
     accountNumber: '123456789012',
     ifsc: 'ABCD0123456',
   }
+  const enableInitialEdit = await request(`/api/hr/employees/${employee.id}/profile-edit`, {
+    method: 'POST',
+    token: hrToken,
+  })
+  assert.equal(enableInitialEdit.response.status, 200)
   const employeeBankUpdate = await request('/api/hr/me/bank-details', {
     method: 'PATCH',
     token: employeeToken,
@@ -1265,6 +1290,11 @@ test('employees view encrypted bank details and submit private HR documents', as
     token: hrToken,
     body: JSON.stringify({ ...bankDetails, ifsc: 'INVALID' }),
   })).response.status, 400)
+  const enableBankEdit = await request(`/api/hr/employees/${employee.id}/profile-edit`, {
+    method: 'POST',
+    token: hrToken,
+  })
+  assert.equal(enableBankEdit.body.profileEditLocked, false)
   const encryptionKey = process.env.HR_DATA_ENCRYPTION_KEY
   delete process.env.HR_DATA_ENCRYPTION_KEY
   const missingKey = await request(`/api/hr/employees/${employee.id}/bank-details`, {
@@ -1331,6 +1361,10 @@ test('employees view encrypted bank details and submit private HR documents', as
     assert.equal(hrEmployee.bankDetails.accountNumber, bankDetails.accountNumber)
     assert.equal(hrEmployee.documents[0].category, 'Aadhaar Card')
     assert.equal(hrEmployee.documents[0].reviewStatus, 'Pending review')
+    assert.equal((await request(`/api/hr/employees/${employee.id}/documents/${uploaded.body.id}/verify`, {
+      method: 'POST',
+      token: employeeToken,
+    })).response.status, 403)
 
     const hrEmploymentUpdate = await request(`/api/hr/employees/${employee.id}`, {
       method: 'PATCH',
@@ -1343,6 +1377,24 @@ test('employees view encrypted bank details and submit private HR documents', as
       }),
     })
     assert.equal(hrEmploymentUpdate.response.status, 200)
+    assert.equal(hrEmploymentUpdate.body.profileEditLocked, true)
+    const lockedPersonalUpdate = await request(`/api/hr/employees/${employee.id}/personal-details`, {
+      method: 'PATCH',
+      token: hrToken,
+      body: JSON.stringify({
+        presentAddress: 'Updated by HR',
+        temporaryAddress: 'Temporary address',
+        fatherName: 'Employee Parent',
+        motherName: 'Employee Parent',
+        dateOfBirth: '1995-02-10',
+      }),
+    })
+    assert.equal(lockedPersonalUpdate.response.status, 409)
+    const enablePersonalEdit = await request(`/api/hr/employees/${employee.id}/profile-edit`, {
+      method: 'POST',
+      token: hrToken,
+    })
+    assert.equal(enablePersonalEdit.body.profileEditLocked, false)
     const hrPersonalUpdate = await request(`/api/hr/employees/${employee.id}/personal-details`, {
       method: 'PATCH',
       token: hrToken,
@@ -1355,6 +1407,15 @@ test('employees view encrypted bank details and submit private HR documents', as
       }),
     })
     assert.equal(hrPersonalUpdate.response.status, 200)
+    assert.equal(hrPersonalUpdate.body.profileEditLocked, true)
+    const verifiedDocument = await request(`/api/hr/employees/${employee.id}/documents/${uploaded.body.id}/verify`, {
+      method: 'POST',
+      token: hrToken,
+    })
+    assert.equal(verifiedDocument.response.status, 200)
+    assert.equal(verifiedDocument.body.reviewStatus, 'Verified')
+    assert.equal(verifiedDocument.body.verifiedBy.name, 'Private Records HR')
+    assert.equal((await request('/api/hr/me', { token: employeeToken })).body.documents[0].reviewStatus, 'Verified')
     const hrUploaded = await request(`/api/hr/employees/${employee.id}/documents`, {
       method: 'POST',
       token: hrToken,
@@ -1375,6 +1436,23 @@ test('employees view encrypted bank details and submit private HR documents', as
     assert.equal(refreshedOwnProfile.body.documents[0].uploadedByRole, 'hr')
     assert.equal(refreshedOwnProfile.body.documents[0].uploadedByName, 'Private Records HR')
     assert.equal(refreshedOwnProfile.body.documents[0].reviewStatus, 'On file')
+    assert.equal(refreshedOwnProfile.body.documents[1].reviewStatus, 'Verified')
+    assert.equal(refreshedOwnProfile.body.documents[1].verifiedBy.name, 'Private Records HR')
+
+    const deletedDocument = await request(`/api/hr/employees/${employee.id}/documents/${hrUploaded.body.id}`, {
+      method: 'DELETE',
+      token: hrToken,
+    })
+    assert.equal(deletedDocument.response.status, 200)
+    const profileAfterDelete = await request('/api/hr/me', { token: employeeToken })
+    assert.equal(profileAfterDelete.body.documents.some((item) => item.id === hrUploaded.body.id), false)
+    assert.equal((await request(`/api/hr/employees/${employee.id}/documents/${hrUploaded.body.id}/download`, { token: hrToken })).response.status, 404)
+    assert.equal((await request(`/api/hr/me/documents/${hrUploaded.body.id}/download`, { token: employeeToken })).response.status, 404)
+    const hrProfileAfterDelete = (await request('/api/hr/employees', { token: hrToken })).body.find((item) => item.id === employee.id)
+    assert.equal(hrProfileAfterDelete.documents.some((item) => item.id === hrUploaded.body.id), false)
+    const storedAfterDelete = JSON.parse(fs.readFileSync(process.env.CRM_DATA_FILE, 'utf8'))
+    const archivedDocument = storedAfterDelete.hrProfiles.find((item) => item.userId === employee.id).documents.find((item) => item.id === hrUploaded.body.id)
+    assert.ok(archivedDocument.deletedAt)
 
     const hrDownload = await request(`/api/hr/employees/${employee.id}/documents/${uploaded.body.id}/download`, { token: hrToken })
     assert.equal(hrDownload.response.status, 200)

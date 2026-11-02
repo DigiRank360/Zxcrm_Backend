@@ -50,7 +50,7 @@ function profileResponse(user, profile = {}, includeSalary = true) {
     ...publicProfile,
     ...(includeSalary ? {} : { monthlySalary: undefined }),
     ...(bankDetailsEncrypted ? { bankDetails: decryptBankDetails(bankDetailsEncrypted) } : { bankDetails: null }),
-    documents: documents.map(publicDocument),
+    documents: documents.filter((document) => !document.deletedAt).map(publicDocument),
     employee: {
       id: user.id,
       reference: `EMP-${user.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`,
@@ -154,6 +154,18 @@ async function employeeProfile(userId, { includeInactive = false } = {}) {
   return { user, profile: profile || {} }
 }
 
+function profileEditLockedError() {
+  const error = new Error('Employee profile details are locked. Select Edit HR details before making changes.')
+  error.status = 409
+  return error
+}
+
+async function ensureProfileEditable(userId) {
+  const data = await crmModel.findAll()
+  const profile = (data.hrProfiles || []).find((item) => item.userId === userId)
+  if (profile?.profileEditLocked) throw profileEditLockedError()
+}
+
 async function listEmployees(req, res, next) {
   try {
     const [users, data] = await Promise.all([
@@ -194,8 +206,9 @@ async function savePersonalDetails(userId, details, actor) {
     }
     const updatedAt = new Date().toISOString()
     const updatedBy = { id: actor.id, name: actor.name, role: actor.role }
-    Object.assign(profile, details, { updatedAt, updatedBy })
-    return { ...details, updatedAt, updatedBy }
+    const profileEditLocked = actor.role === 'hr' ? true : profile.profileEditLocked
+    Object.assign(profile, details, { updatedAt, updatedBy, profileEditLocked })
+    return { ...details, updatedAt, updatedBy, profileEditLocked }
   })
 }
 
@@ -253,6 +266,7 @@ async function updateEmployeePersonalDetails(req, res, next) {
     if (!users.some((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))) {
       return res.status(404).json({ error: 'Employee account not found.' })
     }
+    await ensureProfileEditable(req.params.id)
     res.json(await savePersonalDetails(req.params.id, details, req.user))
   } catch (error) {
     next(error)
@@ -267,6 +281,7 @@ async function updateEmployeeAccount(req, res, next) {
     const employee = users.find((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))
     if (!employee) return res.status(404).json({ error: 'Employee account not found.' })
 
+    await ensureProfileEditable(req.params.id)
     const updatedUser = await userModel.updateProfile(req.params.id, details)
     if (!updatedUser) return res.status(404).json({ error: 'Active employee account not found.' })
     authService.updateUserSessions(updatedUser)
@@ -279,6 +294,7 @@ async function updateEmployeeAccount(req, res, next) {
       }
       current.updatedAt = new Date().toISOString()
       current.updatedBy = { id: req.user.id, name: req.user.name, role: req.user.role }
+      current.profileEditLocked = true
       return current
     })
     res.json(profileResponse(updatedUser, profile, true))
@@ -299,6 +315,7 @@ async function reviewContactDetails(req, res, next) {
     const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
     if (!employee) return res.status(404).json({ error: 'Employee account not found.' })
     if (!profile?.pendingContactChange) return res.status(404).json({ error: 'No pending contact update found.' })
+    if (decision === 'Approved') await ensureProfileEditable(req.params.id)
 
     let updatedUser
     if (decision === 'Approved') {
@@ -316,6 +333,7 @@ async function reviewContactDetails(req, res, next) {
         currentProfile.lastContactChangeReview = { decision, reviewedAt: new Date().toISOString(), reviewedBy: req.user.name }
         currentProfile.updatedAt = new Date().toISOString()
         currentProfile.updatedBy = { id: req.user.id, name: req.user.name, role: req.user.role }
+        currentProfile.profileEditLocked = true
       }
     })
     const latest = await crmModel.findAll()
@@ -338,6 +356,7 @@ async function updateEmployee(req, res, next) {
     if (!users.some((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))) {
       return res.status(404).json({ error: 'Employee account not found.' })
     }
+    await ensureProfileEditable(req.params.id)
     const profile = await crmModel.update((data) => {
       data.hrProfiles ||= []
       const current = data.hrProfiles.find((item) => item.userId === req.params.id)
@@ -349,12 +368,34 @@ async function updateEmployee(req, res, next) {
         monthlySalary: Math.round(Number(monthlySalary) * 100) / 100,
         updatedAt: new Date().toISOString(),
         updatedBy: { id: req.user.id, name: req.user.name, role: req.user.role },
+        profileEditLocked: true,
       }
       if (current) Object.assign(current, updated)
       else data.hrProfiles.push(updated)
       return updated
     })
     res.json(profile)
+  } catch (error) {
+    next(error)
+  }
+}
+
+async function enableEmployeeProfileEditing(req, res, next) {
+  try {
+    const users = await userModel.findAll({ includeInactive: true })
+    const user = users.find((item) => item.id === req.params.id && ['employee', 'technician'].includes(item.role))
+    if (!user) return res.status(404).json({ error: 'Employee account not found.' })
+    const profile = await crmModel.update((data) => {
+      data.hrProfiles ||= []
+      let current = data.hrProfiles.find((item) => item.userId === req.params.id)
+      if (!current) {
+        current = { userId: req.params.id }
+        data.hrProfiles.push(current)
+      }
+      current.profileEditLocked = false
+      return current
+    })
+    res.json(profileResponse(user, profile, true))
   } catch (error) {
     next(error)
   }
@@ -390,6 +431,7 @@ async function updateEmployee(req, res, next) {
       return res.status(400).json({ error: 'Provide account holder, bank name, account number, and valid IFSC code.' })
     }
     try {
+      if (actor.role === 'hr') await ensureProfileEditable(userId)
       const encrypted = encryptBankDetails(bankDetails)
       const profile = await crmModel.update((data) => {
         data.hrProfiles ||= []
@@ -401,12 +443,14 @@ async function updateEmployee(req, res, next) {
         current.bankDetailsEncrypted = encrypted
         current.updatedAt = new Date().toISOString()
         current.updatedBy = { id: actor.id, name: actor.name, role: actor.role }
+        if (actor.role === 'hr') current.profileEditLocked = true
         return current
       })
       res.json({
         bankDetails: decryptBankDetails(profile.bankDetailsEncrypted),
         updatedAt: profile.updatedAt,
         updatedBy: profile.updatedBy,
+        profileEditLocked: profile.profileEditLocked,
       })
     } catch (error) {
       next(error)
@@ -430,7 +474,7 @@ async function updateEmployee(req, res, next) {
       error.status = 404
       throw error
     }
-    if ((employee.profile.documents || []).length >= MAX_DOCUMENTS_PER_EMPLOYEE) {
+    if ((employee.profile.documents || []).filter((item) => !item.deletedAt).length >= MAX_DOCUMENTS_PER_EMPLOYEE) {
       const error = new Error(`An employee can have up to ${MAX_DOCUMENTS_PER_EMPLOYEE} documents.`)
       error.status = 409
       throw error
@@ -461,10 +505,56 @@ async function updateEmployee(req, res, next) {
     }
   }
 
+  async function reviewEmployeeDocument(req, res, next) {
+    try {
+      const updated = await crmModel.update((data) => {
+        const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
+        const document = profile?.documents?.find((item) => item.id === req.params.documentId && !item.deletedAt)
+        if (!document) {
+          const error = new Error('Employee document not found.')
+          error.status = 404
+          throw error
+        }
+        if (document.reviewStatus !== 'Pending review') {
+          const error = new Error('Only pending employee submissions can be verified.')
+          error.status = 409
+          throw error
+        }
+        document.reviewStatus = 'Verified'
+        document.verifiedAt = new Date().toISOString()
+        document.verifiedBy = { id: req.user.id, name: req.user.name }
+        return publicDocument(document)
+      })
+      res.json(updated)
+    } catch (error) {
+      next(error)
+    }
+  }
+
+  async function softDeleteEmployeeDocument(req, res, next) {
+    try {
+      const updated = await crmModel.update((data) => {
+        const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
+        const document = profile?.documents?.find((item) => item.id === req.params.documentId && !item.deletedAt)
+        if (!document) {
+          const error = new Error('Employee document not found.')
+          error.status = 404
+          throw error
+        }
+        document.deletedAt = new Date().toISOString()
+        document.deletedBy = { id: req.user.id, name: req.user.name }
+        return { id: document.id }
+      })
+      res.json(updated)
+    } catch (error) {
+      next(error)
+    }
+  }
+
   async function downloadEmployeeDocument(req, res, next) {
     try {
       const result = await employeeProfile(req.params.id)
-      const document = result?.profile.documents?.find((item) => item.id === req.params.documentId)
+      const document = result?.profile.documents?.find((item) => item.id === req.params.documentId && !item.deletedAt)
       if (!document) return res.status(404).json({ error: 'Employee document not found.' })
       const response = await fetch(privateDownloadUrl(document))
       if (!response.ok) return res.status(502).json({ error: 'Cloudinary could not retrieve this private document.' })
@@ -687,6 +777,9 @@ module.exports = {
   markPaid,
   syncPayroll,
   updateEmployee,
+  enableEmployeeProfileEditing,
+  reviewEmployeeDocument,
+  softDeleteEmployeeDocument,
   updateEmployeeBankDetails,
   updateMyBankDetails,
   uploadEmployeeDocumentByHr,
