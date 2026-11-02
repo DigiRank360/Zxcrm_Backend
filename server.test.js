@@ -275,6 +275,18 @@ test('website lead webhook validates, deduplicates, and assigns an employee', as
   assert.deepEqual(customerProfiles.body[0].installations, [])
 })
 
+test('secret-header webhooks accept website and referral leads and reject bad secrets', async () => {
+  const payload = { name: 'Ref Lead', phone: '+919800000009', referralName: 'Amit', sourceId: 'ref-1' }
+  const bad = await request('/api/webhooks/referral', { method: 'POST', headers: { 'x-webhook-secret': 'wrong' }, body: JSON.stringify(payload) })
+  assert.equal(bad.response.status, 401)
+  const first = await request('/api/webhooks/referral', { method: 'POST', headers: { 'x-webhook-secret': 'referral-test-key' }, body: JSON.stringify(payload) })
+  assert.equal(first.response.status, 201)
+  const dup = await request('/api/webhooks/referral', { method: 'POST', headers: { 'x-webhook-secret': 'referral-test-key' }, body: JSON.stringify(payload) })
+  assert.equal(dup.body.duplicate, true)
+  const invalid = await request('/api/webhooks/website', { method: 'POST', headers: { 'x-webhook-secret': 'website-test-key' }, body: JSON.stringify({ name: 'x' }) })
+  assert.equal(invalid.response.status, 400)
+})
+
 test('Meta webhook verification and signed WhatsApp lead intake work', async () => {
   const verify = await fetch(`${baseUrl}/api/webhooks/meta?hub.mode=subscribe&hub.verify_token=test-meta-verify-token&hub.challenge=challenge-123`)
   assert.equal(verify.status, 200)
@@ -1095,20 +1107,19 @@ test('holiday calendar is managed by admin, visible to employees, and reflected 
   assert.equal((await request(`/api/holidays/${created.body.id}`, { method: 'DELETE', token: adminToken })).response.status, 200)
 })
 
-test('employees save personal details to their own profile only', async () => {
+test('employee profile details are view only and employees cannot edit them', async () => {
   const token = (await signIn('DYNAMIC.EMPLOYEE@EXAMPLE.COM', 'Employee_Password_123!')).token
   const details = { presentAddress: 'A-1 Pune', temporaryAddress: 'B-2 Mumbai', fatherName: 'Ram', motherName: 'Sita', dateOfBirth: '1995-04-12' }
   const saved = await request('/api/hr/me/personal-details', { method: 'PATCH', token, body: JSON.stringify(details) })
-  assert.equal(saved.response.status, 200)
-  const mine = await request('/api/hr/me', { token })
-  assert.equal(mine.body.motherName, 'Sita')
-  assert.equal(mine.body.dateOfBirth, '1995-04-12')
-  const bad = await request('/api/hr/me/personal-details', { method: 'PATCH', token, body: JSON.stringify({ ...details, dateOfBirth: '2999-01-01' }) })
-  assert.equal(bad.response.status, 400)
+  assert.equal(saved.response.status, 403)
+  const contact = await request('/api/hr/me/contact-details', { method: 'PATCH', token, body: JSON.stringify({ name: 'Changed Name' }) })
+  assert.equal(contact.response.status, 403)
+  const bank = await request('/api/hr/me/bank-details', { method: 'PATCH', token, body: JSON.stringify({}) })
+  assert.equal(bank.response.status, 403)
   assert.equal((await request('/api/hr/employees/x/personal-details', { method: 'PATCH', token, body: JSON.stringify(details) })).response.status, 403)
 })
 
-test('employee contact changes require HR approval and HR account edits sync to My Profile', async () => {
+test('HR account edits sync to the employee read-only profile', async () => {
   const hrToken = (await signIn('hr.manager', 'HR_Manager_Password_123!')).token
   const created = await request('/api/users', {
     method: 'POST',
@@ -1128,20 +1139,11 @@ test('employee contact changes require HR approval and HR account edits sync to 
     token,
     body: JSON.stringify({ name: 'Requested Employee Name', phone: '+919800005678', contactEmail: 'contact@example.com' }),
   })
-  assert.equal(requestChange.response.status, 200)
+  assert.equal(requestChange.response.status, 403)
   assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'Profile Sync Employee')
 
   const pending = (await request('/api/hr/employees', { token: hrToken })).body.find((item) => item.id === created.body.id)
-  assert.equal(pending.pendingContactChange.name, 'Requested Employee Name')
-  const approved = await request(`/api/hr/employees/${created.body.id}/contact-details/review`, {
-    method: 'POST', token: hrToken, body: JSON.stringify({ decision: 'Approved' }),
-  })
-  assert.equal(approved.response.status, 200)
-  assert.equal(approved.body.employee.name, 'Requested Employee Name')
-  assert.equal(approved.body.employee.username, 'profile.sync')
-  assert.equal(approved.body.employee.email, 'contact@example.com')
-  assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'Requested Employee Name')
-  assert.equal((await request('/api/auth/me', { token })).body.user.name, 'Requested Employee Name')
+  assert.equal(pending.pendingContactChange, undefined)
 
   const hrEdit = await request(`/api/hr/employees/${created.body.id}/account`, {
     method: 'PATCH',
@@ -1154,19 +1156,6 @@ test('employee contact changes require HR approval and HR account edits sync to 
   assert.equal(hrEdit.body.employee.email, 'corrected@example.com')
   assert.equal(hrEdit.body.employee.username, 'profile.sync')
   assert.equal((await request('/api/hr/me', { token })).body.employee.name, 'HR Corrected Name')
-
-  const rejectedRequest = await request('/api/hr/me/contact-details', {
-    method: 'PATCH',
-    token,
-    body: JSON.stringify({ name: 'Rejected Name', phone: '', contactEmail: '' }),
-  })
-  assert.equal(rejectedRequest.response.status, 200)
-  const rejected = await request(`/api/hr/employees/${created.body.id}/contact-details/review`, {
-    method: 'POST', token: hrToken, body: JSON.stringify({ decision: 'Rejected' }),
-  })
-  assert.equal(rejected.response.status, 200)
-  assert.equal(rejected.body.employee.name, 'HR Corrected Name')
-  assert.equal((await request('/api/hr/me', { token })).body.pendingContactChange, undefined)
   assert.equal((await request(`/api/hr/employees/${created.body.id}/account`, {
     method: 'PATCH', token,
     body: JSON.stringify({ name: 'Employee Cannot Directly Edit', phone: '', contactEmail: '' }),
@@ -1238,7 +1227,7 @@ test('Cloudinary visit photo uploads are authenticated and visit records are rol
   }
 })
 
-test('employees manage their own encrypted bank details and private HR documents', async () => {
+test('employees view encrypted bank details and submit private HR documents', async () => {
   const employeeToken = (await signIn('dynamic.employee@example.com', 'Employee_Password_123!')).token
   const createdHr = await request('/api/users', {
     method: 'POST',
@@ -1258,23 +1247,29 @@ test('employees manage their own encrypted bank details and private HR documents
     accountNumber: '123456789012',
     ifsc: 'ABCD0123456',
   }
-  const bankUpdate = await request('/api/hr/me/bank-details', {
+  const employeeBankUpdate = await request('/api/hr/me/bank-details', {
     method: 'PATCH',
     token: employeeToken,
     body: JSON.stringify(bankDetails),
   })
+  assert.equal(employeeBankUpdate.response.status, 403)
+  const bankUpdate = await request(`/api/hr/employees/${employee.id}/bank-details`, {
+    method: 'PATCH',
+    token: hrToken,
+    body: JSON.stringify(bankDetails),
+  })
   assert.equal(bankUpdate.response.status, 200)
   assert.equal(bankUpdate.body.bankDetails.accountNumber, bankDetails.accountNumber)
-  assert.equal((await request('/api/hr/me/bank-details', {
+  assert.equal((await request(`/api/hr/employees/${employee.id}/bank-details`, {
     method: 'PATCH',
-    token: employeeToken,
+    token: hrToken,
     body: JSON.stringify({ ...bankDetails, ifsc: 'INVALID' }),
   })).response.status, 400)
   const encryptionKey = process.env.HR_DATA_ENCRYPTION_KEY
   delete process.env.HR_DATA_ENCRYPTION_KEY
-  const missingKey = await request('/api/hr/me/bank-details', {
+  const missingKey = await request(`/api/hr/employees/${employee.id}/bank-details`, {
     method: 'PATCH',
-    token: employeeToken,
+    token: hrToken,
     body: JSON.stringify(bankDetails),
   })
   process.env.HR_DATA_ENCRYPTION_KEY = encryptionKey
@@ -1324,6 +1319,7 @@ test('employees manage their own encrypted bank details and private HR documents
     assert.equal(ownProfile.response.status, 200)
     assert.equal(ownProfile.body.bankDetails.accountNumber, bankDetails.accountNumber)
     assert.equal(ownProfile.body.documents[0].category, 'Aadhaar Card')
+    assert.equal(ownProfile.body.documents[0].reviewStatus, 'Pending review')
 
     const privateDownload = await request(`/api/hr/me/documents/${uploaded.body.id}/download`, { token: employeeToken })
     assert.equal(privateDownload.response.status, 200)
@@ -1334,6 +1330,52 @@ test('employees manage their own encrypted bank details and private HR documents
     const hrEmployee = hrEmployees.body.find((item) => item.id === employee.id)
     assert.equal(hrEmployee.bankDetails.accountNumber, bankDetails.accountNumber)
     assert.equal(hrEmployee.documents[0].category, 'Aadhaar Card')
+    assert.equal(hrEmployee.documents[0].reviewStatus, 'Pending review')
+
+    const hrEmploymentUpdate = await request(`/api/hr/employees/${employee.id}`, {
+      method: 'PATCH',
+      token: hrToken,
+      body: JSON.stringify({
+        department: 'Operations',
+        jobTitle: 'Solar Consultant',
+        joiningDate: '2024-01-15',
+        monthlySalary: 42000,
+      }),
+    })
+    assert.equal(hrEmploymentUpdate.response.status, 200)
+    const hrPersonalUpdate = await request(`/api/hr/employees/${employee.id}/personal-details`, {
+      method: 'PATCH',
+      token: hrToken,
+      body: JSON.stringify({
+        presentAddress: 'Updated by HR',
+        temporaryAddress: 'Temporary address',
+        fatherName: 'Employee Parent',
+        motherName: 'Employee Parent',
+        dateOfBirth: '1995-02-10',
+      }),
+    })
+    assert.equal(hrPersonalUpdate.response.status, 200)
+    const hrUploaded = await request(`/api/hr/employees/${employee.id}/documents`, {
+      method: 'POST',
+      token: hrToken,
+      body: JSON.stringify({
+        category: 'PAN Card',
+        document: `data:application/pdf;base64,${Buffer.from('%PDF-1.7 HR employee document').toString('base64')}`,
+      }),
+    })
+    assert.equal(hrUploaded.response.status, 201)
+    const refreshedOwnProfile = await request('/api/hr/me', { token: employeeToken })
+    assert.equal(refreshedOwnProfile.response.status, 200)
+    assert.equal(refreshedOwnProfile.body.department, 'Operations')
+    assert.equal(refreshedOwnProfile.body.jobTitle, 'Solar Consultant')
+    assert.equal(refreshedOwnProfile.body.joiningDate, '2024-01-15')
+    assert.equal(refreshedOwnProfile.body.monthlySalary, 42000)
+    assert.equal(refreshedOwnProfile.body.presentAddress, 'Updated by HR')
+    assert.equal(refreshedOwnProfile.body.updatedBy.role, 'hr')
+    assert.equal(refreshedOwnProfile.body.documents[0].uploadedByRole, 'hr')
+    assert.equal(refreshedOwnProfile.body.documents[0].uploadedByName, 'Private Records HR')
+    assert.equal(refreshedOwnProfile.body.documents[0].reviewStatus, 'On file')
+
     const hrDownload = await request(`/api/hr/employees/${employee.id}/documents/${uploaded.body.id}/download`, { token: hrToken })
     assert.equal(hrDownload.response.status, 200)
     assert.equal((await request('/api/hr/employees', { token: employeeToken })).response.status, 403)

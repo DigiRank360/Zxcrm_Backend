@@ -63,7 +63,7 @@ function normalizeLead(payload, source) {
     error.status = 400
     throw error
   }
-  const optionalText = ['email', 'state', 'city', 'propertyType']
+  const optionalText = ['email', 'state', 'city', 'propertyType', 'service', 'referralName', 'referralPhone', 'sourceId']
   if (optionalText.some((key) => payload[key] !== undefined && (typeof payload[key] !== 'string' || payload[key].length > 200)) ||
       ((payload.notes !== undefined || payload.message !== undefined) &&
         (typeof (payload.notes ?? payload.message) !== 'string' || (payload.notes ?? payload.message).length > 500)) ||
@@ -74,7 +74,7 @@ function normalizeLead(payload, source) {
   }
   return {
     id: crypto.randomUUID(),
-    externalId: payload.externalId || payload.lead_id || payload.id || null,
+    externalId: payload.externalId || payload.sourceId || payload.lead_id || payload.id || null,
     name: name.trim(),
     phone: phone.trim(),
     email: typeof (payload.email || payload.email_address) === 'string' ? (payload.email || payload.email_address).trim() : '',
@@ -87,6 +87,9 @@ function normalizeLead(payload, source) {
     state: typeof payload.state === 'string' ? payload.state.trim() : '',
     city: typeof payload.city === 'string' ? payload.city.trim() : '',
     propertyType: typeof payload.propertyType === 'string' ? payload.propertyType.trim() : '',
+    service: typeof payload.service === 'string' ? payload.service.trim() : '',
+    referralName: typeof payload.referralName === 'string' ? payload.referralName.trim() : '',
+    referralPhone: typeof payload.referralPhone === 'string' ? payload.referralPhone.trim() : '',
     score: Number.isFinite(Number(payload.score)) ? Math.max(0, Math.min(100, Number(payload.score))) : 0,
   }
 }

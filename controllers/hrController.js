@@ -81,7 +81,7 @@ function bankDetailsFrom(input) {
   }
 }
 
-async function uploadPrivateDocument(userId, category, dataUrl, uploadedBy) {
+async function uploadPrivateDocument(userId, category, dataUrl, actor) {
   if (!documentCategories.has(category) || typeof dataUrl !== 'string') {
     const error = new Error('Choose a valid document type and select a supported document.')
     error.status = 400
@@ -134,8 +134,15 @@ async function uploadPrivateDocument(userId, category, dataUrl, uploadedBy) {
     publicId: result.public_id,
     format: result.format || type.extension,
     uploadedAt: new Date().toISOString(),
-    uploadedBy,
+    uploadedBy: actor.id,
+    uploadedByName: actor.name,
+    uploadedByRole: actor.role,
+    reviewStatus: ['employee', 'technician'].includes(actor.role) ? 'Pending review' : 'On file',
   }
+}
+
+function denyEmployeeProfileUpdate(req, res) {
+  res.status(403).json({ error: 'Your profile is view only. Submit documents to HR if your records need attention.' })
 }
 
 async function employeeProfile(userId, { includeInactive = false } = {}) {
@@ -177,7 +184,7 @@ function personalDetailsFrom(input) {
   }
 }
 
-async function savePersonalDetails(userId, details) {
+async function savePersonalDetails(userId, details, actor) {
   return crmModel.update((data) => {
     data.hrProfiles ||= []
     let profile = data.hrProfiles.find((item) => item.userId === userId)
@@ -185,8 +192,10 @@ async function savePersonalDetails(userId, details) {
       profile = { userId }
       data.hrProfiles.push(profile)
     }
-    Object.assign(profile, details, { updatedAt: new Date().toISOString() })
-    return details
+    const updatedAt = new Date().toISOString()
+    const updatedBy = { id: actor.id, name: actor.name, role: actor.role }
+    Object.assign(profile, details, { updatedAt, updatedBy })
+    return { ...details, updatedAt, updatedBy }
   })
 }
 
@@ -194,7 +203,7 @@ async function updateMyPersonalDetails(req, res, next) {
   const details = personalDetailsFrom(req.body)
   if (!details) return res.status(400).json({ error: 'Provide valid addresses, parent names (max 300 characters) and a past date of birth.' })
   try {
-    res.json(await savePersonalDetails(req.user.id, details))
+    res.json(await savePersonalDetails(req.user.id, details, req.user))
   } catch (error) {
     next(error)
   }
@@ -214,7 +223,7 @@ async function updateMyContactDetails(req, res, next) {
   const details = contactDetailsFrom(req.body)
   if (!details) return res.status(400).json({ error: 'Provide a valid name, phone number, and contact email.' })
   try {
-    const pendingContactChange = await crmModel.update((data) => {
+    const result = await crmModel.update((data) => {
       data.hrProfiles ||= []
       let profile = data.hrProfiles.find((item) => item.userId === req.user.id)
       if (!profile) {
@@ -223,9 +232,14 @@ async function updateMyContactDetails(req, res, next) {
       }
       profile.pendingContactChange = { ...details, requestedAt: new Date().toISOString() }
       profile.updatedAt = new Date().toISOString()
-      return profile.pendingContactChange
+      profile.updatedBy = { id: req.user.id, name: req.user.name, role: req.user.role }
+      return {
+        pendingContactChange: profile.pendingContactChange,
+        updatedAt: profile.updatedAt,
+        updatedBy: profile.updatedBy,
+      }
     })
-    res.json({ pendingContactChange })
+    res.json(result)
   } catch (error) {
     next(error)
   }
@@ -239,7 +253,7 @@ async function updateEmployeePersonalDetails(req, res, next) {
     if (!users.some((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role))) {
       return res.status(404).json({ error: 'Employee account not found.' })
     }
-    res.json(await savePersonalDetails(req.params.id, details))
+    res.json(await savePersonalDetails(req.params.id, details, req.user))
   } catch (error) {
     next(error)
   }
@@ -256,8 +270,17 @@ async function updateEmployeeAccount(req, res, next) {
     const updatedUser = await userModel.updateProfile(req.params.id, details)
     if (!updatedUser) return res.status(404).json({ error: 'Active employee account not found.' })
     authService.updateUserSessions(updatedUser)
-    const data = await crmModel.findAll()
-    const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id) || {}
+    const profile = await crmModel.update((data) => {
+      data.hrProfiles ||= []
+      let current = data.hrProfiles.find((item) => item.userId === req.params.id)
+      if (!current) {
+        current = { userId: req.params.id }
+        data.hrProfiles.push(current)
+      }
+      current.updatedAt = new Date().toISOString()
+      current.updatedBy = { id: req.user.id, name: req.user.name, role: req.user.role }
+      return current
+    })
     res.json(profileResponse(updatedUser, profile, true))
   } catch (error) {
     next(error)
@@ -291,6 +314,8 @@ async function reviewContactDetails(req, res, next) {
       if (currentProfile) {
         delete currentProfile.pendingContactChange
         currentProfile.lastContactChangeReview = { decision, reviewedAt: new Date().toISOString(), reviewedBy: req.user.name }
+        currentProfile.updatedAt = new Date().toISOString()
+        currentProfile.updatedBy = { id: req.user.id, name: req.user.name, role: req.user.role }
       }
     })
     const latest = await crmModel.findAll()
@@ -323,6 +348,7 @@ async function updateEmployee(req, res, next) {
         joiningDate,
         monthlySalary: Math.round(Number(monthlySalary) * 100) / 100,
         updatedAt: new Date().toISOString(),
+        updatedBy: { id: req.user.id, name: req.user.name, role: req.user.role },
       }
       if (current) Object.assign(current, updated)
       else data.hrProfiles.push(updated)
@@ -345,20 +371,20 @@ async function updateEmployee(req, res, next) {
   }
 
   async function updateMyBankDetails(req, res, next) {
-    return updateBankDetails(req.user.id, req.body, res, next)
+    return updateBankDetails(req.user.id, req.body, req.user, res, next)
   }
 
   async function updateEmployeeBankDetails(req, res, next) {
     try {
       const employee = await employeeProfile(req.params.id)
       if (!employee) return res.status(404).json({ error: 'Active employee account not found.' })
-      return updateBankDetails(req.params.id, req.body, res, next)
+      return updateBankDetails(req.params.id, req.body, req.user, res, next)
     } catch (error) {
       next(error)
     }
   }
 
-  async function updateBankDetails(userId, body, res, next) {
+  async function updateBankDetails(userId, body, actor, res, next) {
     const bankDetails = bankDetailsFrom(body)
     if (!bankDetails) {
       return res.status(400).json({ error: 'Provide account holder, bank name, account number, and valid IFSC code.' })
@@ -374,11 +400,13 @@ async function updateEmployee(req, res, next) {
         }
         current.bankDetailsEncrypted = encrypted
         current.updatedAt = new Date().toISOString()
+        current.updatedBy = { id: actor.id, name: actor.name, role: actor.role }
         return current
       })
       res.json({
         bankDetails: decryptBankDetails(profile.bankDetailsEncrypted),
         updatedAt: profile.updatedAt,
+        updatedBy: profile.updatedBy,
       })
     } catch (error) {
       next(error)
@@ -387,14 +415,14 @@ async function updateEmployee(req, res, next) {
 
   async function uploadMyDocument(req, res, next) {
     try {
-      const result = await uploadEmployeeDocument(req.user.id, req.body, req.user.id)
+      const result = await uploadEmployeeDocument(req.user.id, req.body, req.user)
       res.status(201).json(result)
     } catch (error) {
       next(error)
     }
   }
 
-  async function uploadEmployeeDocument(userId, body, uploadedBy) {
+  async function uploadEmployeeDocument(userId, body, actor) {
     const { category, document } = body || {}
     const employee = await employeeProfile(userId)
     if (!employee) {
@@ -407,7 +435,7 @@ async function updateEmployee(req, res, next) {
       error.status = 409
       throw error
     }
-    const metadata = await uploadPrivateDocument(userId, category, document, uploadedBy)
+    const metadata = await uploadPrivateDocument(userId, category, document, actor)
     const saved = await crmModel.update((data) => {
       data.hrProfiles ||= []
       let profile = data.hrProfiles.find((item) => item.userId === userId)
@@ -418,6 +446,7 @@ async function updateEmployee(req, res, next) {
       profile.documents ||= []
       profile.documents.unshift(metadata)
       profile.updatedAt = new Date().toISOString()
+      profile.updatedBy = { id: actor.id, name: actor.name, role: actor.role }
       return metadata
     })
     return publicDocument(saved)
@@ -425,7 +454,7 @@ async function updateEmployee(req, res, next) {
 
   async function uploadEmployeeDocumentByHr(req, res, next) {
     try {
-      const result = await uploadEmployeeDocument(req.params.id, req.body, req.user.id)
+      const result = await uploadEmployeeDocument(req.params.id, req.body, req.user)
       res.status(201).json(result)
     } catch (error) {
       next(error)
@@ -641,6 +670,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:10px;border-
 }
 
 module.exports = {
+  denyEmployeeProfileUpdate,
   updateEmployeePersonalDetails,
   updateEmployeeAccount,
   updateMyContactDetails,
