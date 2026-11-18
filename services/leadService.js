@@ -122,14 +122,29 @@ async function ingest(payloads, source) {
 }
 
 async function createManual(payload, employee) {
-  if (!employee || employee.role !== 'employee') {
-    const error = new Error('Only employees can create a manual lead from the call queue.')
+  if (!employee || !['admin', 'employee'].includes(employee.role)) {
+    const error = new Error('Only administrators and employees can create manual leads.')
     error.status = 403
     throw error
   }
   const lead = normalizeLead(payload, 'Manual')
-  lead.agentId = employee.id
-  lead.assignmentReason = `Manually created by ${employee.name}.`
+  if (employee.role === 'employee') {
+    lead.agentId = employee.id
+    lead.assignmentReason = `Manually created by ${employee.name}.`
+  } else if (payload.agentId) {
+    const users = await userModel.findAll()
+    const agent = users.find((item) => item.id === payload.agentId && item.role === 'employee' && item.active !== false)
+    if (!agent) {
+      const error = new Error('Select an active employee.')
+      error.status = 400
+      throw error
+    }
+    lead.agentId = agent.id
+    lead.assignmentReason = `Manually created and assigned by ${employee.name}.`
+  } else {
+    lead.agentId = null
+    lead.assignmentReason = `Manually created by ${employee.name}; left unassigned.`
+  }
   return crmModel.update((data) => {
     const customer = findOrCreateCustomer(data, lead)
     lead.customerId = customer.id

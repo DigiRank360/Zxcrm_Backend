@@ -598,7 +598,13 @@ test('employees can manually create leads assigned to themselves', async () => {
     body: JSON.stringify({ name: '', phone: '' }),
   })
   assert.equal(invalid.response.status, 400)
-  assert.equal((await request('/api/leads/manual', { method: 'POST', token: adminToken, body: JSON.stringify({ name: 'Forbidden', phone: '+919811112200' }) })).response.status, 403)
+  const adminCreated = await request('/api/leads/manual', {
+    method: 'POST',
+    token: adminToken,
+    body: JSON.stringify({ name: 'Admin Manual Lead', phone: '+919811112200' }),
+  })
+  assert.equal(adminCreated.response.status, 201)
+  assert.equal(adminCreated.body.lead.agentId, null)
 })
 
 test('employees can transfer an owned lead to another employee dashboard', async () => {
