@@ -40,7 +40,7 @@ async function softDelete(req, res, next) {
   try {
     const updated = await crmModel.update((data) => {
       const lead = data.leads.find((item) => item.id === req.params.id)
-      if (!lead || lead.deletedAt) {
+      if (!lead) {
         const error = new Error('Active lead not found.')
         error.status = 404
         throw error
@@ -50,10 +50,11 @@ async function softDelete(req, res, next) {
         error.status = 403
         throw error
       }
-      lead.deletedAt = new Date().toISOString()
-      lead.deletedBy = req.user.id
       const customer = (data.customers || []).find((item) => item.id === lead.customerId)
-      if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead moved to archive by ${req.user.name}`)
+      if (customer?.history) {
+        customer.history = customer.history.filter((event) => event.recordId !== lead.id)
+      }
+      data.leads = data.leads.filter((item) => item.id !== lead.id)
       return lead
     })
     res.json({ lead: updated })

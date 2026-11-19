@@ -19,6 +19,7 @@ const emptyData = {
   payroll: [],
   visits: [],
   holidays: [],
+  leaveRequests: [],
 }
 
 const resourceKeys = Object.keys(emptyData)

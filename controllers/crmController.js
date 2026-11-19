@@ -2,6 +2,8 @@ const crmModel = require('../models/crmModel')
 const userModel = require('../models/userModel')
 const { addCustomerEvent } = require('../services/customerService')
 const { employeeOwnsInstallation, employeeOwnsTicket } = require('../services/accessService')
+const { autoCheckoutOpenAttendance } = require('../services/attendanceService')
+const { currentMaintenanceTickets } = require('../services/maintenanceService')
 
 const leadStatuses = new Set(['New', 'Interested', 'Busy', 'Not Picked', 'Not Interested', 'Other', 'Converted'])
 
@@ -15,10 +17,16 @@ const permissions = {
 
 async function getCrm(req, res, next) {
   try {
-    const [data, users] = await Promise.all([
-      crmModel.findAll(),
+    const [users] = await Promise.all([
       userModel.findAll({ includeInactive: req.user.role === 'admin' }),
     ])
+    const employees = users.filter((user) => user.role === 'employee')
+    await autoCheckoutOpenAttendance({
+      ids: employees.map((user) => user.id),
+      names: employees.map((user) => user.name),
+    })
+    const data = await crmModel.findAll()
+    data.maintenance = currentMaintenanceTickets(data.maintenance)
     data.users = req.user.role === 'admin' ? users
       : req.user.role === 'employee' ? users.filter((user) => user.id === req.user.id || (user.role === 'technician' && user.active !== false))
         : users.filter((user) => user.id === req.user.id)
@@ -59,6 +67,9 @@ async function getCrm(req, res, next) {
     }
     data.holidays ||= []
     data.visits ||= []
+    data.leaveRequests ||= []
+    if (req.user.role === 'employee') data.leaveRequests = data.leaveRequests.filter((leave) => leave.employeeId === req.user.id)
+    else if (req.user.role === 'technician') data.leaveRequests = []
     if (req.user.role === 'employee') data.visits = data.visits.filter((visit) => visit.userId === req.user.id)
     if (req.user.role === 'technician') data.visits = []
     data.hrProfiles = []

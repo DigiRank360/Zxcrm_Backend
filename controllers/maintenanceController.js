@@ -172,9 +172,13 @@ async function verifyOtp(req, res, next) {
       found.status = 'Completed'
       const customer = (data.customers || []).find((item) => item.id === found.customerId)
       if (customer) addCustomerEvent(customer, 'ticket', found.id, `Service completed: ${found.title || 'Service job'}`)
-      return found
+      const nextJob = data.maintenance
+        .filter((item) => item.installationId === found.installationId &&
+          item.status === 'Pending')
+        .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)))[0]
+      return { found, nextJob: nextJob || null }
     })
-    res.json({ job })
+    res.json({ job: job.found, nextJob: job.nextJob })
   } catch (error) {
     next(error)
   }

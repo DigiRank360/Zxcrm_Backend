@@ -575,7 +575,93 @@ async function enableEmployeeProfileEditing(req, res, next) {
     return downloadEmployeeDocument(req, res, next)
   }
 
-async function listPayroll(req, res, next) {
+  const leaveTypes = new Set(['Sick Leave', 'Casual Leave', 'Earned Leave', 'Other'])
+
+  async function requestLeave(req, res, next) {
+    const { leaveType, fromDate, toDate, reason = '' } = req.body || {}
+    if (!leaveTypes.has(leaveType) || !validDate(fromDate) || !validDate(toDate) ||
+        fromDate > toDate || typeof reason !== 'string' || reason.trim().length > 500) {
+      return res.status(400).json({ error: 'Provide a valid leave type, date range, and reason up to 500 characters.' })
+    }
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      if (fromDate < today) return res.status(400).json({ error: 'Leave cannot start in the past.' })
+      const request = await crmModel.update((data) => {
+        data.leaveRequests ||= []
+        const overlapping = data.leaveRequests.find((item) =>
+          item.employeeId === req.user.id &&
+          ['Pending', 'Approved'].includes(item.status) &&
+          item.fromDate <= toDate &&
+          item.toDate >= fromDate)
+        if (overlapping) {
+          const error = new Error('A pending or approved leave request already overlaps these dates.')
+          error.status = 409
+          throw error
+        }
+        const created = {
+          id: crypto.randomUUID(),
+          employeeId: req.user.id,
+          employeeName: req.user.name,
+          leaveType,
+          fromDate,
+          toDate,
+          reason: reason.trim(),
+          status: 'Pending',
+          requestedAt: new Date().toISOString(),
+        }
+        data.leaveRequests.unshift(created)
+        return created
+      })
+      res.status(201).json(request)
+    } catch (error) {
+      next(error)
+    }
+  }
+
+  async function listLeaveRequests(req, res, next) {
+    try {
+      const data = await crmModel.findAll()
+      res.json([...(data.leaveRequests || [])].sort((a, b) =>
+        (a.status === 'Pending' ? 0 : 1) - (b.status === 'Pending' ? 0 : 1) ||
+        b.requestedAt.localeCompare(a.requestedAt)))
+    } catch (error) {
+      next(error)
+    }
+  }
+
+  async function reviewLeaveRequest(req, res, next) {
+    const { decision, note = '' } = req.body || {}
+    if (!['Approved', 'Rejected'].includes(decision) ||
+        typeof note !== 'string' || note.trim().length > 500) {
+      return res.status(400).json({ error: 'Choose Approved or Rejected and provide an optional review note up to 500 characters.' })
+    }
+    try {
+      const updated = await crmModel.update((data) => {
+        data.leaveRequests ||= []
+        const leave = data.leaveRequests.find((item) => item.id === req.params.id)
+        if (!leave) {
+          const error = new Error('Leave request not found.')
+          error.status = 404
+          throw error
+        }
+        if (leave.status !== 'Pending') {
+          const error = new Error('Only pending leave requests can be reviewed.')
+          error.status = 409
+          throw error
+        }
+        leave.status = decision
+        leave.reviewNote = note.trim()
+        leave.reviewedAt = new Date().toISOString()
+        leave.reviewedBy = { id: req.user.id, name: req.user.name }
+        return leave
+      })
+      res.json(updated)
+    } catch (error) {
+      next(error)
+    }
+  }
+
+  async function listPayroll(req, res, next) {
   try {
     const data = await crmModel.findAll()
     res.json([...(data.payroll || [])].sort((a, b) => b.month.localeCompare(a.month) || a.employeeName.localeCompare(b.employeeName)))
@@ -760,6 +846,9 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:10px;border-
 }
 
 module.exports = {
+  requestLeave,
+  listLeaveRequests,
+  reviewLeaveRequest,
   denyEmployeeProfileUpdate,
   updateEmployeePersonalDetails,
   updateEmployeeAccount,

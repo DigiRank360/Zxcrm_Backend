@@ -120,6 +120,70 @@ test('health endpoint reports readiness and new CRM storage is empty', async () 
   assert.equal(crm.body.users.length, 1)
 })
 
+test('open employee attendance is checked out automatically after 8 PM IST', () => {
+  const { applyAttendanceAutoCheckout } = require('./services/attendanceService')
+  const data = {
+    attendance: [{
+      id: 'open-session',
+      userId: 'employee-1',
+      employee: 'Employee One',
+      date: '2026-11-18',
+      checkIn: '09:30',
+      checkInAt: '2026-11-18T04:00:00.000Z',
+      checkOut: '',
+      checkOutAt: '',
+      status: 'Present',
+    }],
+  }
+
+  const beforeCutoff = applyAttendanceAutoCheckout(
+    data,
+    new Date('2026-11-18T13:29:59.000Z'),
+  )
+  assert.equal(beforeCutoff.changed, false)
+  assert.equal(data.attendance[0].checkOut, '')
+
+  const afterCutoff = applyAttendanceAutoCheckout(
+    data,
+    new Date('2026-11-18T14:30:00.000Z'),
+  )
+  assert.equal(afterCutoff.changed, true)
+  assert.equal(data.attendance[0].checkOut, '20:00')
+  assert.equal(data.attendance[0].checkOutAt, '2026-11-18T14:30:00.000Z')
+
+  const previousDay = {
+    attendance: [{
+      id: 'previous-open-session',
+      userId: 'employee-1',
+      employee: 'Employee One',
+      date: '2026-11-06',
+      checkIn: '10:41',
+      checkInAt: '2026-11-06T05:11:00.000Z',
+      checkOut: '',
+      checkOutAt: '',
+      status: 'Present',
+    }],
+  }
+  const caughtUp = applyAttendanceAutoCheckout(
+    previousDay,
+    new Date('2026-11-19T02:35:09.633Z'),
+  )
+  assert.equal(caughtUp.changed, true)
+  assert.equal(previousDay.attendance[0].checkOut, '20:00')
+  assert.equal(previousDay.attendance[0].checkOutAt, '2026-11-06T14:30:00.000Z')
+})
+
+test('quarterly maintenance exposes only the earliest pending visit', () => {
+  const { currentMaintenanceTickets } = require('./services/maintenanceService')
+  const tickets = [
+    { id: 'q1', installationId: 'install-1', dueDate: '2026-12-01', status: 'Pending', type: 'AMC' },
+    { id: 'q2', installationId: 'install-1', dueDate: '2027-03-01', status: 'Pending', type: 'AMC' },
+    { id: 'q3', installationId: 'install-1', dueDate: '2026-11-01', status: 'Completed', type: 'AMC' },
+  ]
+  const current = currentMaintenanceTickets(tickets)
+  assert.deepEqual(current.map((ticket) => ticket.id), ['q1', 'q3'])
+})
+
 test('legacy CRM records migrate into persistent customer profiles idempotently', () => {
   const { migrateCustomers } = require('./services/customerService')
   const data = {
@@ -576,21 +640,16 @@ test('employees can manually create leads assigned to themselves', async () => {
   assert.equal(otherStatus.body.status, 'Other')
 
   assert.equal((await request(`/api/leads/${created.body.lead.id}`, { method: 'DELETE', token: recipientToken })).response.status, 403)
-  const archived = await request(`/api/leads/${created.body.lead.id}`, { method: 'DELETE', token: employeeToken })
-  assert.equal(archived.response.status, 200)
-  assert.ok(archived.body.lead.deletedAt)
+  const permanentlyDeleted = await request(`/api/leads/${created.body.lead.id}`, { method: 'DELETE', token: employeeToken })
+  assert.equal(permanentlyDeleted.response.status, 200)
+  assert.equal(permanentlyDeleted.body.lead.deletedAt, undefined)
   assert.equal((await request('/api/crm', { token: employeeToken })).body.leads.some((lead) => lead.id === created.body.lead.id), false)
-  assert.ok((await request('/api/crm', { token: adminToken })).body.leads.some((lead) => lead.id === created.body.lead.id && lead.deletedAt))
+  assert.equal((await request('/api/crm', { token: adminToken })).body.leads.some((lead) => lead.id === created.body.lead.id), false)
   assert.equal((await request(`/api/leads/${created.body.lead.id}`, {
     method: 'PATCH',
     token: employeeToken,
     body: JSON.stringify({ status: 'Interested' }),
-  })).response.status, 409)
-
-  const restored = await request(`/api/leads/${created.body.lead.id}/restore`, { method: 'POST', token: adminToken })
-  assert.equal(restored.response.status, 200)
-  assert.equal(restored.body.lead.deletedAt, undefined)
-  assert.ok((await request('/api/crm', { token: employeeToken })).body.leads.some((lead) => lead.id === created.body.lead.id))
+  })).response.status, 404)
 
   const invalid = await request('/api/leads/manual', {
     method: 'POST',
@@ -733,7 +792,7 @@ test('only commissioning creates an installation and quarterly maintenance jobs'
   assert.ok(completed.body.commissionedTickets.every((job) => job.workerId === null))
   const employeeCrm = await request('/api/crm', { token: employeeToken })
   assert.equal(employeeCrm.body.installations.length, 1)
-  assert.equal(employeeCrm.body.maintenance.length, 4)
+  assert.equal(employeeCrm.body.maintenance.length, 1)
   assert.equal(employeeCrm.body.installations[0].customer, 'Dynamic Solar Customer')
   const employeeCustomers = await request('/api/customers', { token: employeeToken })
   const commissionedCustomer = employeeCustomers.body.find((item) => item.name === 'Dynamic Solar Customer')
@@ -994,7 +1053,7 @@ test('commissioning creates the installation and quarterly maintenance schedule'
   const crm = await request('/api/crm', { token: adminToken })
   const installation = crm.body.installations.find((item) => item.applicationId === application.body.id)
   assert.ok(installation)
-  assert.equal(crm.body.maintenance.filter((item) => item.installationId === installation.id).length, 4)
+  assert.equal(crm.body.maintenance.filter((item) => item.installationId === installation.id).length, 1)
 })
 
 test('HR login manages monthly payroll with manual deductions and private salary profiles', async () => {

@@ -42,6 +42,36 @@ async function deliverSms(phone, otp) {
   }
 }
 
+async function sendMaintenanceReminder(phone, customerName, dueDate, title) {
+  const { accountSid, authToken, fromNumber } = config.twilio
+  if (!accountSid || !authToken || !fromNumber) {
+    throw createError('Twilio is not configured. Set Twilio credentials to send maintenance reminders.')
+  }
+  if (typeof phone !== 'string' || !/^\+[1-9]\d{7,14}$/.test(phone)) {
+    throw createError('The customer phone number must be saved in international format (for example, +919876543210).', 400)
+  }
+  const body = new URLSearchParams({
+    To: phone,
+    From: fromNumber,
+    Body: `ZX Solar reminder: ${title || 'Quarterly maintenance'} is due on ${dueDate} for ${customerName || 'your installation'}.`,
+  })
+  const authorization = Buffer.from(`${accountSid}:${authToken}`).toString('base64')
+  const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${authorization}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body,
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!response.ok) {
+    const details = await response.json().catch(() => ({}))
+    console.error('Twilio maintenance reminder failed.', { status: response.status, code: details.code })
+    throw createError('The maintenance reminder could not be delivered.')
+  }
+}
+
 async function issue(jobId, phone) {
   const otp = String(crypto.randomInt(0, 10000)).padStart(4, '0')
   await deliverSms(phone, otp)
@@ -71,4 +101,4 @@ function verify(jobId, submittedOtp) {
   return { valid: true }
 }
 
-module.exports = { issue, verify }
+module.exports = { issue, verify, sendMaintenanceReminder }
