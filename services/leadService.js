@@ -10,10 +10,12 @@ function normalizeValue(value) {
 }
 
 function routeLead(lead, agents, leads) {
-  const loads = new Map(agents.map((agent) => [
-    agent.id,
-    leads.filter((item) => item.agentId === agent.id && openLead(item)).length,
-  ]))
+  const loads = new Map(agents.map((agent) => [agent.id, 0]))
+  for (const item of leads) {
+    if (loads.has(item.agentId) && openLead(item)) {
+      loads.set(item.agentId, loads.get(item.agentId) + 1)
+    }
+  }
   const candidates = agents.filter((agent) => {
     const load = loads.get(agent.id)
     const capacity = Number.isInteger(agent.maxOpenLeads) && agent.maxOpenLeads >= 0
