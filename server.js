@@ -32,7 +32,7 @@ async function start() {
   const otpService = require('./services/otpService')
   const { currentMaintenanceTickets } = require('./services/maintenanceService')
   const runMaintenanceReminders = async () => {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['maintenance', 'customers'])
     const today = new Date()
     for (const ticket of currentMaintenanceTickets(data.maintenance)) {
       if (ticket.type !== 'AMC' || ticket.status !== 'Pending' || ticket.reminderSentAt) continue
@@ -44,12 +44,12 @@ async function start() {
       if (!customer?.phone) continue
       try {
         await otpService.sendMaintenanceReminder(customer.phone, customer.name, ticket.dueDate, ticket.title)
-        await crmModel.update((current) => {
+        await crmModel.updateResource('maintenance', (current) => {
           const found = current.maintenance.find((item) => item.id === ticket.id)
           if (found) found.reminderSentAt = new Date().toISOString()
         })
       } catch (error) {
-        console.error('Maintenance reminder failed.', { ticketId: ticket.id, error: error.message })
+        console.error(JSON.stringify({ event: 'maintenance_reminder_failed', error: error.name }))
       }
     }
   }

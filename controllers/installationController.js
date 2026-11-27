@@ -44,7 +44,7 @@ async function create(req, res, next) {
         status: 'Pending',
       }
     })
-    await crmModel.update((data) => {
+    await crmModel.updateResources(['installations', 'maintenance', 'customers'], (data) => {
       const record = findOrCreateCustomer(data, customerDetails)
       installation.customerId = record.id
       for (const ticket of tickets) ticket.customerId = record.id
@@ -69,7 +69,7 @@ async function assignEmployee(req, res, next) {
     if (employeeId !== null && !employee) {
       return res.status(400).json({ error: 'Select an active employee.' })
     }
-    const result = await crmModel.update((data) => {
+    const result = await crmModel.updateResources(['installations', 'applications', 'customers'], (data) => {
       const installation = data.installations.find((item) => item.id === req.params.installationId)
       if (!installation) {
         const error = new Error('Installation not found.')

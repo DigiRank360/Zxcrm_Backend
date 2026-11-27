@@ -31,7 +31,7 @@ async function upload(req, res, next) {
     return res.status(400).json({ error: 'Provide a valuation document and file name.' })
   }
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['installations', 'applications'])
     const installation = installationFor(data, req.params.installationId)
     if (!installation) return res.status(404).json({ error: 'Installation not found.' })
     if (req.user.role !== 'employee' || !employeeOwnsInstallation(data, installation, req.user.id)) {
@@ -88,7 +88,7 @@ async function upload(req, res, next) {
 
 async function list(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['installations', 'applications'])
     const installation = installationFor(data, req.params.installationId)
     if (!installation) return res.status(404).json({ error: 'Installation not found.' })
     if (req.user.role !== 'admin' && !employeeOwnsInstallation(data, installation, req.user.id)) {
@@ -107,7 +107,7 @@ async function download(req, res, next) {
     if (!document || document.installationId !== req.params.installationId || !visibleTo(document, req.user)) {
       return res.status(404).json({ error: 'Document not found.' })
     }
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['installations', 'applications'])
     const installation = installationFor(data, document.installationId)
     if (!installation || (req.user.role !== 'admin' && !employeeOwnsInstallation(data, installation, req.user.id))) {
       return res.status(404).json({ error: 'Document not found.' })

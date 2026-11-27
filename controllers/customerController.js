@@ -50,7 +50,7 @@ function profileFor(data, customer, user) {
 
 async function list(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['customers', 'leads', 'maintenance', 'applications', 'installations'])
     const profiles = (data.customers || []).map((customer) => profileFor(data, customer, req.user)).filter(Boolean)
     res.json(profiles.sort((a, b) => a.name.localeCompare(b.name)))
   } catch (error) {
@@ -60,7 +60,7 @@ async function list(req, res, next) {
 
 async function get(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['customers', 'leads', 'maintenance', 'applications', 'installations'])
     const customer = (data.customers || []).find((item) => item.id === req.params.id)
     if (!customer) return res.status(404).json({ error: 'Customer not found.' })
     const profile = profileFor(data, customer, req.user)

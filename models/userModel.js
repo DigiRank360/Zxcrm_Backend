@@ -120,6 +120,15 @@ async function findAll({ includeInactive = false } = {}) {
   return (await readUsers()).filter((user) => includeInactive || (user.active !== false && !user.deletedAt)).map(publicUser)
 }
 
+async function findActiveById(id) {
+  if (!config.localTestStorage) {
+    const user = await User.findOne({ id, active: true, deletedAt: { $exists: false } }).lean()
+    return user ? publicUser(user) : null
+  }
+  const user = (await readUsers()).find((item) => item.id === id && item.active !== false && !item.deletedAt)
+  return user ? publicUser(user) : null
+}
+
 async function create({ name, username, password, role, phone = '', maxOpenLeads, serviceAreas = [], propertyTypes = [], minLeadScore, maxLeadScore }) {
   const routing = {
     ...(maxOpenLeads !== undefined ? { maxOpenLeads: Number(maxOpenLeads) } : {}),
@@ -251,4 +260,4 @@ async function restore(id) {
   return publicUser(user)
 }
 
-module.exports = { create, findAll, findByUsername, hashPassword, initializeAdmin, publicUser, restore, softDelete, updateProfile, updateRouting, verifyPassword }
+module.exports = { create, findActiveById, findAll, findByUsername, hashPassword, initializeAdmin, publicUser, restore, softDelete, updateProfile, updateRouting, verifyPassword }

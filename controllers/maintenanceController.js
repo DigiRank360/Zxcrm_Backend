@@ -27,7 +27,7 @@ async function create(req, res, next) {
     if (workerId && !users.some((user) => user.id === workerId && user.role === 'technician')) {
       return res.status(400).json({ error: 'Select an active technician.' })
     }
-    const ticket = await crmModel.update((data) => {
+    const ticket = await crmModel.updateResources(['customers', 'installations', 'applications', 'maintenance'], (data) => {
       const customer = (data.customers || []).find((item) => item.id === customerId)
       const installation = data.installations.find((item) => item.id === installationId)
       if (!customer || !installation || installation.customerId !== customerId) {
@@ -82,7 +82,7 @@ async function assign(req, res, next) {
     if (workerId && !users.some((user) => user.id === workerId && user.role === 'technician')) {
       return res.status(400).json({ error: 'Select an active technician.' })
     }
-    const ticket = await crmModel.update((data) => {
+    const ticket = await crmModel.updateResources(['maintenance', 'customers', 'installations', 'applications'], (data) => {
       const found = data.maintenance.find((item) => item.id === req.params.id)
       if (!found) {
         const error = new Error('Service ticket not found.')
@@ -129,7 +129,7 @@ async function assign(req, res, next) {
 
 async function requestOtp(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['maintenance', 'installations', 'customers'])
     const job = data.maintenance.find((item) => String(item.id) === req.params.id)
     if (!job) return res.status(404).json({ error: 'Service job not found.' })
     if (job.workerId !== req.user.id) return res.status(403).json({ error: 'This service job is assigned to another technician.' })
@@ -145,14 +145,14 @@ async function requestOtp(req, res, next) {
 
 async function verifyOtp(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['maintenance'])
     const existing = data.maintenance.find((item) => String(item.id) === req.params.id)
     if (!existing) return res.status(404).json({ error: 'Service job not found.' })
     if (existing.workerId !== req.user.id) return res.status(403).json({ error: 'This service job is assigned to another technician.' })
     if (existing.status === 'Completed') return res.status(409).json({ error: 'This service job is already completed.' })
     const result = otpService.verify(req.params.id, req.body?.otp)
     if (!result.valid) return res.status(result.status).json({ error: result.error })
-    const job = await crmModel.update((data) => {
+    const job = await crmModel.updateResources(['maintenance', 'customers'], (data) => {
       const found = data.maintenance.find((item) => String(item.id) === req.params.id)
       if (!found) {
         const error = new Error('Service job not found.')

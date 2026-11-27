@@ -149,7 +149,7 @@ async function employeeProfile(userId, { includeInactive = false } = {}) {
   const users = await userModel.findAll({ includeInactive })
   const user = users.find((item) => item.id === userId && ['employee', 'technician'].includes(item.role))
   if (!user) return null
-  const data = await crmModel.findAll()
+  const data = await crmModel.findResources(['hrProfiles'])
   const profile = (data.hrProfiles || []).find((item) => item.userId === userId)
   return { user, profile: profile || {} }
 }
@@ -161,7 +161,7 @@ function profileEditLockedError() {
 }
 
 async function ensureProfileEditable(userId) {
-  const data = await crmModel.findAll()
+  const data = await crmModel.findResources(['hrProfiles'])
   const profile = (data.hrProfiles || []).find((item) => item.userId === userId)
   if (profile?.profileEditLocked) throw profileEditLockedError()
 }
@@ -170,7 +170,7 @@ async function listEmployees(req, res, next) {
   try {
     const [users, data] = await Promise.all([
       userModel.findAll({ includeInactive: true }),
-      crmModel.findAll(),
+      crmModel.findResources(['hrProfiles']),
     ])
     const profiles = new Map((data.hrProfiles || []).map((profile) => [profile.userId, profile]))
     res.json(users.filter((user) => ['employee', 'technician'].includes(user.role))
@@ -197,7 +197,7 @@ function personalDetailsFrom(input) {
 }
 
 async function savePersonalDetails(userId, details, actor) {
-  return crmModel.update((data) => {
+  return crmModel.updateResource('hrProfiles', (data) => {
     data.hrProfiles ||= []
     let profile = data.hrProfiles.find((item) => item.userId === userId)
     if (!profile) {
@@ -236,7 +236,7 @@ async function updateMyContactDetails(req, res, next) {
   const details = contactDetailsFrom(req.body)
   if (!details) return res.status(400).json({ error: 'Provide a valid name, phone number, and contact email.' })
   try {
-    const result = await crmModel.update((data) => {
+    const result = await crmModel.updateResource('hrProfiles', (data) => {
       data.hrProfiles ||= []
       let profile = data.hrProfiles.find((item) => item.userId === req.user.id)
       if (!profile) {
@@ -285,7 +285,7 @@ async function updateEmployeeAccount(req, res, next) {
     const updatedUser = await userModel.updateProfile(req.params.id, details)
     if (!updatedUser) return res.status(404).json({ error: 'Active employee account not found.' })
     authService.updateUserSessions(updatedUser)
-    const profile = await crmModel.update((data) => {
+    const profile = await crmModel.updateResource('hrProfiles', (data) => {
       data.hrProfiles ||= []
       let current = data.hrProfiles.find((item) => item.userId === req.params.id)
       if (!current) {
@@ -311,7 +311,7 @@ async function reviewContactDetails(req, res, next) {
   try {
     const employee = await userModel.findAll({ includeInactive: true }).then((users) =>
       users.find((user) => user.id === req.params.id && ['employee', 'technician'].includes(user.role)))
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['hrProfiles'])
     const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
     if (!employee) return res.status(404).json({ error: 'Employee account not found.' })
     if (!profile?.pendingContactChange) return res.status(404).json({ error: 'No pending contact update found.' })
@@ -326,7 +326,7 @@ async function reviewContactDetails(req, res, next) {
       updatedUser = employee
     }
 
-    await crmModel.update((current) => {
+    await crmModel.updateResource('hrProfiles', (current) => {
       const currentProfile = (current.hrProfiles || []).find((item) => item.userId === req.params.id)
       if (currentProfile) {
         delete currentProfile.pendingContactChange
@@ -336,7 +336,7 @@ async function reviewContactDetails(req, res, next) {
         currentProfile.profileEditLocked = true
       }
     })
-    const latest = await crmModel.findAll()
+    const latest = await crmModel.findResources(['hrProfiles'])
     const latestProfile = (latest.hrProfiles || []).find((item) => item.userId === req.params.id) || {}
     res.json(profileResponse(updatedUser, latestProfile, true))
   } catch (error) {
@@ -357,7 +357,7 @@ async function updateEmployee(req, res, next) {
       return res.status(404).json({ error: 'Employee account not found.' })
     }
     await ensureProfileEditable(req.params.id)
-    const profile = await crmModel.update((data) => {
+    const profile = await crmModel.updateResource('hrProfiles', (data) => {
       data.hrProfiles ||= []
       const current = data.hrProfiles.find((item) => item.userId === req.params.id)
       const updated = {
@@ -385,7 +385,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
     const users = await userModel.findAll({ includeInactive: true })
     const user = users.find((item) => item.id === req.params.id && ['employee', 'technician'].includes(item.role))
     if (!user) return res.status(404).json({ error: 'Employee account not found.' })
-    const profile = await crmModel.update((data) => {
+    const profile = await crmModel.updateResource('hrProfiles', (data) => {
       data.hrProfiles ||= []
       let current = data.hrProfiles.find((item) => item.userId === req.params.id)
       if (!current) {
@@ -433,7 +433,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
     try {
       if (actor.role === 'hr') await ensureProfileEditable(userId)
       const encrypted = encryptBankDetails(bankDetails)
-      const profile = await crmModel.update((data) => {
+      const profile = await crmModel.updateResource('hrProfiles', (data) => {
         data.hrProfiles ||= []
         let current = data.hrProfiles.find((item) => item.userId === userId)
         if (!current) {
@@ -480,7 +480,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
       throw error
     }
     const metadata = await uploadPrivateDocument(userId, category, document, actor)
-    const saved = await crmModel.update((data) => {
+    const saved = await crmModel.updateResource('hrProfiles', (data) => {
       data.hrProfiles ||= []
       let profile = data.hrProfiles.find((item) => item.userId === userId)
       if (!profile) {
@@ -507,7 +507,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
 
   async function reviewEmployeeDocument(req, res, next) {
     try {
-      const updated = await crmModel.update((data) => {
+      const updated = await crmModel.updateResource('hrProfiles', (data) => {
         const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
         const document = profile?.documents?.find((item) => item.id === req.params.documentId && !item.deletedAt)
         if (!document) {
@@ -533,7 +533,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
 
   async function softDeleteEmployeeDocument(req, res, next) {
     try {
-      const updated = await crmModel.update((data) => {
+      const updated = await crmModel.updateResource('hrProfiles', (data) => {
         const profile = (data.hrProfiles || []).find((item) => item.userId === req.params.id)
         const document = profile?.documents?.find((item) => item.id === req.params.documentId && !item.deletedAt)
         if (!document) {
@@ -586,7 +586,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
     try {
       const today = new Date().toISOString().slice(0, 10)
       if (fromDate < today) return res.status(400).json({ error: 'Leave cannot start in the past.' })
-      const request = await crmModel.update((data) => {
+      const request = await crmModel.updateResource('leaveRequests', (data) => {
         data.leaveRequests ||= []
         const overlapping = data.leaveRequests.find((item) =>
           item.employeeId === req.user.id &&
@@ -620,7 +620,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
 
   async function listLeaveRequests(req, res, next) {
     try {
-      const data = await crmModel.findAll()
+      const data = await crmModel.findResources(['leaveRequests'])
       res.json([...(data.leaveRequests || [])].sort((a, b) =>
         (a.status === 'Pending' ? 0 : 1) - (b.status === 'Pending' ? 0 : 1) ||
         b.requestedAt.localeCompare(a.requestedAt)))
@@ -636,7 +636,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
       return res.status(400).json({ error: 'Choose Approved or Rejected and provide an optional review note up to 500 characters.' })
     }
     try {
-      const updated = await crmModel.update((data) => {
+      const updated = await crmModel.updateResource('leaveRequests', (data) => {
         data.leaveRequests ||= []
         const leave = data.leaveRequests.find((item) => item.id === req.params.id)
         if (!leave) {
@@ -663,7 +663,7 @@ async function enableEmployeeProfileEditing(req, res, next) {
 
   async function listPayroll(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['payroll'])
     res.json([...(data.payroll || [])].sort((a, b) => b.month.localeCompare(a.month) || a.employeeName.localeCompare(b.employeeName)))
   } catch (error) {
     next(error)
@@ -676,7 +676,7 @@ async function previewPayroll(req, res, next) {
     return res.status(400).json({ error: 'Provide an employee and a valid YYYY-MM pay month.' })
   }
   try {
-    const [users, data] = await Promise.all([userModel.findAll(), crmModel.findAll()])
+    const [users, data] = await Promise.all([userModel.findAll(), crmModel.findResources(['hrProfiles', 'attendance', 'holidays'])])
     const employee = users.find((user) => user.id === employeeId && ['employee', 'technician'].includes(user.role))
     const profile = (data.hrProfiles || []).find((item) => item.userId === employeeId)
     if (!employee || !profile) return res.status(404).json({ error: 'Set up an active employee profile and monthly salary first.' })
@@ -701,22 +701,23 @@ async function createPayroll(req, res, next) {
     return res.status(400).json({ error: 'Provide an employee, a YYYY-MM pay month, and valid manual deduction entries.' })
   }
   try {
-    const [users, result] = await Promise.all([
-      userModel.findAll(),
-      crmModel.findAll(),
-    ])
+    const users = await userModel.findAll()
     const employee = users.find((user) => user.id === employeeId && ['employee', 'technician'].includes(user.role))
-    const profile = (result.hrProfiles || []).find((item) => item.userId === employeeId)
-    if (!employee || !profile) return res.status(400).json({ error: 'Set up an active employee profile and monthly salary before payroll.' })
-    const calculation = calculatePayroll({
-      attendance: result.attendance || [],
-      holidays: result.holidays || [],
-      employee: { ...employee, monthlySalary: profile.monthlySalary },
-      month,
-      deductions,
-    })
-
-    const payroll = await crmModel.update((data) => {
+    if (!employee) return res.status(400).json({ error: 'Set up an active employee profile and monthly salary before payroll.' })
+    const payroll = await crmModel.updateResources(['payroll', 'hrProfiles', 'attendance', 'holidays'], (data) => {
+      const profile = (data.hrProfiles || []).find((item) => item.userId === employeeId)
+      if (!profile) {
+        const error = new Error('Set up an active employee profile and monthly salary before payroll.')
+        error.status = 400
+        throw error
+      }
+      const calculation = calculatePayroll({
+        attendance: data.attendance || [],
+        holidays: data.holidays || [],
+        employee: { ...employee, monthlySalary: profile.monthlySalary },
+        month,
+        deductions,
+      })
       data.payroll ||= []
       if (data.payroll.some((item) => item.employeeId === employeeId && item.month === month)) {
         const error = new Error('Payroll already exists for this employee and month.')
@@ -744,7 +745,7 @@ async function createPayroll(req, res, next) {
 
 async function markPaid(req, res, next) {
   try {
-    const payroll = await crmModel.update((data) => {
+    const payroll = await crmModel.updateResource('payroll', (data) => {
       const record = (data.payroll || []).find((item) => item.id === req.params.id)
       if (!record) {
         const error = new Error('Payroll record not found.')
@@ -769,27 +770,33 @@ async function markPaid(req, res, next) {
 
 async function syncPayroll(req, res, next) {
   try {
-    const [users, data] = await Promise.all([userModel.findAll(), crmModel.findAll()])
-    const current = (data.payroll || []).find((item) => item.id === req.params.id)
-    if (!current) return res.status(404).json({ error: 'Payroll record not found.' })
-    if (current.status === 'Paid') return res.status(409).json({ error: 'Paid payroll cannot be recalculated.' })
-    const employee = users.find((user) => user.id === current.employeeId)
-    const profile = (data.hrProfiles || []).find((item) => item.userId === current.employeeId)
-    if (!employee || !profile) return res.status(400).json({ error: 'Employee salary profile is no longer available.' })
-    const calculation = calculatePayroll({
-      attendance: data.attendance || [],
-      holidays: data.holidays || [],
-      employee: { ...employee, monthlySalary: profile.monthlySalary },
-      month: current.month,
-      deductions: current.deductions || [],
-    })
-    const payroll = await crmModel.update((nextData) => {
-      const record = (nextData.payroll || []).find((item) => item.id === req.params.id)
-      if (!record || record.status === 'Paid') {
-        const error = new Error('This payroll cannot be recalculated.')
+    const users = await userModel.findAll()
+    const payroll = await crmModel.updateResources(['payroll', 'hrProfiles', 'attendance', 'holidays'], (data) => {
+      const record = (data.payroll || []).find((item) => item.id === req.params.id)
+      if (!record) {
+        const error = new Error('Payroll record not found.')
+        error.status = 404
+        throw error
+      }
+      if (record.status === 'Paid') {
+        const error = new Error('Paid payroll cannot be recalculated.')
         error.status = 409
         throw error
       }
+      const employee = users.find((user) => user.id === record.employeeId)
+      const profile = (data.hrProfiles || []).find((item) => item.userId === record.employeeId)
+      if (!employee || !profile) {
+        const error = new Error('Employee salary profile is no longer available.')
+        error.status = 400
+        throw error
+      }
+      const calculation = calculatePayroll({
+        attendance: data.attendance || [],
+        holidays: data.holidays || [],
+        employee: { ...employee, monthlySalary: profile.monthlySalary },
+        month: record.month,
+        deductions: record.deductions || [],
+      })
       Object.assign(record, calculation, { updatedAt: new Date().toISOString() })
       return record
     })
@@ -807,7 +814,7 @@ function escapeHtml(value) {
 
 async function downloadPayrollSlip(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['payroll'])
     const record = (data.payroll || []).find((item) => item.id === req.params.id)
     if (!record) return res.status(404).json({ error: 'Payroll record not found.' })
     const deductions = (record.deductions || []).map((item) =>

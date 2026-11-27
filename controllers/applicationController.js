@@ -65,7 +65,7 @@ async function create(req, res, next) {
         approvalStatus: approvalStages.includes(index) ? 'Pending' : 'Not required',
       })),
     }
-    await crmModel.update((data) => {
+    await crmModel.updateResources(['applications', 'customers'], (data) => {
       if (data.applications.some((item) => item.applicationNumber === created.applicationNumber)) {
         const error = new Error('This application number already exists.')
         error.status = 409
@@ -87,7 +87,7 @@ async function create(req, res, next) {
 
 async function completeStep(req, res, next) {
   try {
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResources(['applications', 'installations', 'maintenance', 'customers'], (data) => {
       const found = data.applications.find((item) => item.id === req.params.id)
       if (!found) {
         const error = new Error('Solar application not found.')
@@ -200,7 +200,7 @@ async function uploadStepDocument(req, res, next) {
     return res.status(400).json({ error: 'Provide a valid workflow stage, document, and file name.' })
   }
   try {
-    const snapshot = await crmModel.findAll()
+    const snapshot = await crmModel.findResources(['applications'])
     const current = findAccessible(snapshot, req)
     const activeStage = current.steps.findIndex((step) => !step.completedAt)
     if (stage !== activeStage) return res.status(409).json({ error: 'Documents can only be uploaded to the current workflow stage.' })
@@ -208,7 +208,7 @@ async function uploadStepDocument(req, res, next) {
       return res.status(409).json({ error: 'A workflow stage can have up to 10 documents.' })
     }
     const stored = await uploadPrivateFile(document, `zxsolarcrm/applications/${req.params.id}/stages/${stage}`)
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResource('applications', (data) => {
       const found = findAccessible(data, req)
       const currentStage = found.steps.findIndex((step) => !step.completedAt)
       if (currentStage !== stage) {
@@ -244,7 +244,7 @@ async function downloadStepDocument(req, res, next) {
     return res.status(400).json({ error: 'Provide a valid workflow stage.' })
   }
   try {
-    const found = findAccessible(await crmModel.findAll(), req)
+    const found = findAccessible(await crmModel.findResources(['applications']), req)
     const document = found.steps[stage]?.documents?.find((item) => item.id === req.params.documentId)
     if (!document) return res.status(404).json({ error: 'Workflow document not found.' })
     res.json({ url: privateDownloadUrl(document), fileName: document.fileName })
@@ -261,7 +261,7 @@ async function transfer(req, res, next) {
   try {
     const [users, snapshot] = await Promise.all([
       userModel.findAll(),
-      crmModel.findAll(),
+      crmModel.findResources(['applications']),
     ])
     const recipient = users.find((item) => item.id === employeeId && item.role === 'employee' && item.active !== false)
     if (!recipient) return res.status(404).json({ error: 'Active employee account not found.' })
@@ -271,7 +271,7 @@ async function transfer(req, res, next) {
     }
     const stage = current.steps.findIndex((step) => !step.completedAt)
     if (stage < 0) return res.status(409).json({ error: 'Completed applications cannot be transferred.' })
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResources(['applications', 'customers'], (data) => {
       const found = findAccessible(data, req)
       const activeStage = found.steps.findIndex((step) => !step.completedAt)
       if (activeStage !== stage) {
@@ -311,7 +311,7 @@ async function decideApproval(req, res, next) {
     return res.status(400).json({ error: 'Provide an Approved or Rejected decision and a note up to 1000 characters.' })
   }
   try {
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResource('applications', (data) => {
       const found = data.applications.find((item) => item.id === req.params.id)
       if (!found) {
         const error = new Error('Solar application not found.')
@@ -360,7 +360,7 @@ async function updateCommercial(req, res, next) {
   const commercial = commercialFrom(req.body)
   if (commercial.error) return res.status(400).json({ error: commercial.error })
   try {
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResource('applications', (data) => {
       const found = findAccessible(data, req)
       Object.assign(found, commercial.values)
       return found
@@ -377,10 +377,10 @@ async function uploadOcrDocument(req, res, next) {
     return res.status(400).json({ error: 'Provide the document and its file name.' })
   }
   try {
-    const current = await crmModel.findAll()
+    const current = await crmModel.findResources(['applications'])
     findAccessible(current, req)
     const stored = await uploadPrivateFile(document, `zxsolarcrm/application-ocr/${req.params.id}`)
-    const application = await crmModel.update((data) => {
+    const application = await crmModel.updateResources(['applications', 'customers'], (data) => {
       const found = findAccessible(data, req)
       found.ocrDocument = {
         fileName: fileName.trim().replace(/[\\/]/g, '_'),
@@ -401,7 +401,7 @@ async function uploadOcrDocument(req, res, next) {
 
 async function downloadOcrDocument(req, res, next) {
   try {
-    const found = findAccessible(await crmModel.findAll(), req)
+    const found = findAccessible(await crmModel.findResources(['applications']), req)
     if (!found.ocrDocument) return res.status(404).json({ error: 'No OCR document uploaded for this application.' })
     res.json({ url: privateDownloadUrl(found.ocrDocument), fileName: found.ocrDocument.fileName })
   } catch (error) {

@@ -38,7 +38,7 @@ async function createManual(req, res, next) {
 
 async function softDelete(req, res, next) {
   try {
-    const updated = await crmModel.update((data) => {
+    const updated = await crmModel.updateResources(['leads', 'customers'], (data) => {
       const lead = data.leads.find((item) => item.id === req.params.id)
       if (!lead) {
         const error = new Error('Active lead not found.')
@@ -56,7 +56,7 @@ async function softDelete(req, res, next) {
       }
       data.leads = data.leads.filter((item) => item.id !== lead.id)
       return lead
-    })
+    }, { retrySafe: true })
     res.json({ lead: updated })
   } catch (error) {
     next(error)
@@ -65,7 +65,7 @@ async function softDelete(req, res, next) {
 
 async function restore(req, res, next) {
   try {
-    const updated = await crmModel.update((data) => {
+    const updated = await crmModel.updateResources(['leads', 'customers'], (data) => {
       const lead = data.leads.find((item) => item.id === req.params.id && item.deletedAt)
       if (!lead) {
         const error = new Error('Archived lead not found.')
@@ -77,7 +77,7 @@ async function restore(req, res, next) {
       const customer = (data.customers || []).find((item) => item.id === lead.customerId)
       if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead restored by ${req.user.name}`)
       return lead
-    })
+    }, { retrySafe: true })
     res.json({ lead: updated })
   } catch (error) {
     next(error)
@@ -88,9 +88,8 @@ async function assign(req, res, next) {
   const { agentId } = req.body || {}
   if (agentId !== null && typeof agentId !== 'string') return res.status(400).json({ error: 'Provide an employee ID or null to unassign.' })
   try {
-    const users = await userModel.findAll()
-    const agents = users.filter((user) => user.role === 'employee')
-    const updated = await crmModel.update((data) => {
+    const selected = agentId === null ? null : await userModel.findActiveById(agentId)
+    const updated = await crmModel.updateResources(['leads', 'customers'], (data) => {
       const lead = data.leads.find((item) => item.id === req.params.id)
       if (!lead) {
         const error = new Error('Lead not found.')
@@ -122,7 +121,7 @@ async function assign(req, res, next) {
         }
         return lead
       }
-      const agent = agents.find((item) => item.id === agentId)
+      const agent = selected?.role === 'employee' ? selected : null
       if (!agent) {
         const error = new Error('Select an active employee.')
         error.status = 400
@@ -159,7 +158,7 @@ async function assign(req, res, next) {
         }
       }
       return lead
-    })
+    }, { retrySafe: true })
     res.json({ lead: updated })
   } catch (error) {
     next(error)
@@ -175,7 +174,7 @@ async function transferLocation(req, res, next) {
   const toState = state.trim()
   const toCity = city.trim()
   try {
-    const updated = await crmModel.update((data) => {
+    const updated = await crmModel.updateResources(['leads', 'customers'], (data) => {
       const lead = data.leads.find((item) => item.id === req.params.id)
       if (!lead) {
         const error = new Error('Lead not found.')
@@ -215,7 +214,7 @@ async function transferLocation(req, res, next) {
       const customer = (data.customers || []).find((item) => item.id === lead.customerId)
       if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead transferred from ${from} to ${to} by ${req.user.name}`)
       return lead
-    })
+    }, { retrySafe: true })
     res.json({ lead: updated })
   } catch (error) {
     next(error)
@@ -245,7 +244,7 @@ async function update(req, res, next) {
     return res.status(400).json({ error: 'Lead text fields must be valid strings of 500 characters or fewer.' })
   }
   try {
-    const updated = await crmModel.update((data) => {
+    const updated = await crmModel.updateResources(updates.status === undefined ? ['leads'] : ['leads', 'customers'], (data) => {
       const lead = data.leads.find((item) => item.id === req.params.id)
       if (!lead) {
         const error = new Error('Lead not found.')
@@ -272,7 +271,7 @@ async function update(req, res, next) {
         if (customer) addCustomerEvent(customer, 'lead', lead.id, `Lead status changed to ${lead.status}`)
       }
       return lead
-    })
+    }, { retrySafe: true })
     res.json(updated)
   } catch (error) {
     next(error)

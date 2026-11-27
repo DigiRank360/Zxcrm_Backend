@@ -3,7 +3,7 @@ const crmModel = require('../models/crmModel')
 
 async function list(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['visits'])
     const visits = data.visits || []
     res.json(['admin', 'hr'].includes(req.user.role) ? visits : visits.filter((visit) => visit.userId === req.user.id))
   } catch (error) {
@@ -20,7 +20,7 @@ async function create(req, res, next) {
     return res.status(400).json({ error: 'Provide a visit type, customer/site, note, and uploaded Cloudinary photo.' })
   }
   try {
-    const visit = await crmModel.update((data) => {
+    const visit = await crmModel.updateResource('visits', (data) => {
       data.visits ||= []
       const created = {
         id: crypto.randomUUID(),

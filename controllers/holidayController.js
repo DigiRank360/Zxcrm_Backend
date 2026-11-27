@@ -11,7 +11,7 @@ function validDate(value) {
 
 async function list(req, res, next) {
   try {
-    const data = await crmModel.findAll()
+    const data = await crmModel.findResources(['holidays'])
     res.json((data.holidays || []).slice().sort(byDate))
   } catch (error) {
     next(error)
@@ -25,7 +25,7 @@ async function create(req, res, next) {
     return res.status(400).json({ error: 'Provide a valid date (YYYY-MM-DD) and a holiday name.' })
   }
   try {
-    const holiday = await crmModel.update((data) => {
+    const holiday = await crmModel.updateResource('holidays', (data) => {
       data.holidays ||= []
       if (data.holidays.some((item) => item.date === date)) {
         const error = new Error('A holiday is already defined for this date.')
@@ -50,7 +50,7 @@ async function create(req, res, next) {
 
 async function remove(req, res, next) {
   try {
-    await crmModel.update((data) => {
+    await crmModel.updateResource('holidays', (data) => {
       data.holidays ||= []
       const index = data.holidays.findIndex((item) => item.id === req.params.id)
       if (index === -1) {

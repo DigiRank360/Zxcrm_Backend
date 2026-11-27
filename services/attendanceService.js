@@ -54,7 +54,7 @@ function applyAttendanceAutoCheckout(data, now = new Date(), employeeScope = nul
 
 async function autoCheckoutOpenAttendance(employeeScope = null, now = new Date()) {
   const crmModel = require('../models/crmModel')
-  return crmModel.update((data) => applyAttendanceAutoCheckout(data, now, employeeScope))
+  return crmModel.updateResource('attendance', (data) => applyAttendanceAutoCheckout(data, now, employeeScope), { retrySafe: true })
 }
 
 module.exports = { applyAttendanceAutoCheckout, autoCheckoutOpenAttendance, istParts }

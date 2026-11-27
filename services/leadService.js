@@ -105,7 +105,7 @@ async function ingest(payloads, source) {
   }
   const users = await userModel.findAll()
   const agents = users.filter((user) => user.role === 'employee' && user.active !== false)
-  return crmModel.update((data) => {
+  return crmModel.updateResources(['leads', 'customers'], (data) => {
     const currentLeads = data.leads
     const created = []
     for (const lead of inputs) {
@@ -147,7 +147,7 @@ async function createManual(payload, employee) {
     lead.agentId = null
     lead.assignmentReason = `Manually created by ${employee.name}; left unassigned.`
   }
-  return crmModel.update((data) => {
+  return crmModel.updateResources(['leads', 'customers'], (data) => {
     const customer = findOrCreateCustomer(data, lead)
     lead.customerId = customer.id
     addCustomerEvent(customer, 'lead', lead.id, `Lead manually added by ${employee.name}`)
@@ -160,7 +160,7 @@ async function createManual(payload, employee) {
 async function autoAssign() {
   const users = await userModel.findAll()
   const agents = users.filter((user) => user.role === 'employee' && user.active !== false)
-  return crmModel.update((data) => {
+  return crmModel.updateResources(['leads', 'customers'], (data) => {
     const openLeads = data.leads.filter(openLead).sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')) || String(a.id).localeCompare(String(b.id)))
     for (const lead of openLeads) {
       const result = routeLead(lead, agents, data.leads.filter((item) => item.id !== lead.id))

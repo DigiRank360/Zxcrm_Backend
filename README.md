@@ -110,8 +110,7 @@ Set `HR_DATA_ENCRYPTION_KEY` to a persistent 32-byte key encoded as 64 hexadecim
 - `GET /api/visits` and `POST /api/visits` — employee field visit records
 - `POST /api/leads/auto-assign`
 - `POST /api/leads/import` and `PATCH /api/leads/:id/assign` — administrator only
-- `DELETE /api/leads/:id` — employee soft-archives an assigned lead; data is retained
-- `POST /api/leads/:id/restore` — administrator restores an archived lead
+- `DELETE /api/leads/:id` — administrator or assigned employee permanently removes a lead and its customer-history entries
 - `POST /api/leads/manual` — employee creates a lead assigned to their own queue
 - `GET /api/customers` and `GET /api/customers/:id` — scoped customer 360 profiles
 - `POST /api/maintenance` and `PATCH /api/maintenance/:id` — administrator ticket handling
@@ -125,3 +124,5 @@ Set `HR_DATA_ENCRYPTION_KEY` to a persistent 32-byte key encoded as 64 hexadecim
 Authenticated routes use a bearer token returned from login. Employee and technician CRM data is scoped to their work; HR receives HR, payroll, attendance, and visit records but not customer, lead, installation, or service-ticket data. Bank details and identity/bank-proof documents are available only to the employee concerned and HR; administrator routes do not expose them.
 
 Run `npm test` for API integration tests.
+
+See [CRM performance optimization](docs/CRM_PERFORMANCE_OPTIMIZATION.md) for MongoDB requirements, isolated MongoDB tests, known concurrency limitations, and deployment precautions.

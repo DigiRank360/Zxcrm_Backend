@@ -4,7 +4,7 @@ function normalizedPhone(phone) {
   return String(phone || '').replace(/\D/g, '')
 }
 
-function findOrCreateCustomer(data, details = {}) {
+function findOrCreateCustomer(data, details = {}, { touchExisting = true } = {}) {
   const phone = String(details.phone || '').trim()
   const email = String(details.email || '').trim().toLowerCase()
   const phoneKey = normalizedPhone(phone)
@@ -13,10 +13,14 @@ function findOrCreateCustomer(data, details = {}) {
     (email && item.email?.toLowerCase() === email))
   const now = new Date().toISOString()
   if (customer) {
+    let changed = false
     for (const key of ['name', 'phone', 'email', 'address', 'state', 'city', 'propertyType']) {
-      if (details[key] && !customer[key]) customer[key] = details[key]
+      if (details[key] && !customer[key]) {
+        customer[key] = details[key]
+        changed = true
+      }
     }
-    customer.updatedAt = now
+    if (touchExisting || changed) customer.updatedAt = now
     return customer
   }
   const created = {
@@ -57,7 +61,7 @@ function migrateCustomers(data) {
     const customer = findOrCreateCustomer(data, {
       name: lead.name, phone: lead.phone, email: lead.email, state: lead.state,
       city: lead.city, propertyType: lead.propertyType,
-    })
+    }, { touchExisting: false })
     lead.customerId ||= customer.id
     if (!customer.history.some((event) => event.recordId === lead.id)) {
       addCustomerEvent(customer, 'lead', lead.id, `Lead received from ${lead.source || 'CRM'}`)
@@ -67,7 +71,7 @@ function migrateCustomers(data) {
     const customer = findOrCreateCustomer(data, {
       name: application.customer, phone: application.phone, email: application.email,
       address: application.address, state: application.state, city: application.city,
-    })
+    }, { touchExisting: false })
     application.customerId ||= customer.id
     if (!customer.history.some((event) => event.recordId === application.id)) {
       addCustomerEvent(customer, 'application', application.id, `Solar application ${application.applicationNumber || ''} created`.trim())
@@ -77,7 +81,7 @@ function migrateCustomers(data) {
     const customer = findOrCreateCustomer(data, {
       name: installation.customer, phone: installation.phone, email: installation.email,
       address: installation.address, state: installation.state, city: installation.city,
-    })
+    }, { touchExisting: false })
     installation.customerId ||= customer.id
     if (!customer.history.some((event) => event.recordId === installation.id)) {
       addCustomerEvent(customer, 'installation', installation.id, 'Solar installation recorded')

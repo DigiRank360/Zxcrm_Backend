@@ -1157,6 +1157,112 @@ test('HR login manages monthly payroll with manual deductions and private salary
   assert.equal(JSON.stringify((await request('/api/crm', { token: hrToken })).body).includes('monthlySalary'), false)
 })
 
+test('CRM dashboard reads only resources visible to each role', async () => {
+  const crmModel = require('./models/crmModel')
+  const original = crmModel.findResources
+  const reads = []
+  crmModel.findResources = async (keys) => {
+    reads.push(keys)
+    return original(keys)
+  }
+  try {
+    const hrToken = (await signIn('hr.manager', 'HR_Manager_Password_123!')).token
+    for (const [token, expected] of [
+      [adminToken, ['leads', 'attendance', 'installations', 'maintenance', 'applications', 'customers', 'visits', 'holidays', 'leaveRequests']],
+      [employeeToken, ['leads', 'attendance', 'installations', 'maintenance', 'applications', 'customers', 'visits', 'holidays', 'leaveRequests']],
+      [technicianToken, ['attendance', 'installations', 'maintenance', 'customers', 'holidays']],
+      [hrToken, ['attendance', 'visits', 'holidays', 'leaveRequests']],
+    ]) {
+      const result = await request('/api/crm', { token })
+      assert.equal(result.response.status, 200)
+      assert.deepEqual(reads.pop(), expected)
+      for (const key of ['leads', 'attendance', 'installations', 'maintenance', 'applications', 'customers', 'hrProfiles', 'payroll', 'visits', 'holidays', 'leaveRequests']) {
+        assert.ok(Array.isArray(result.body[key]), `${key} should retain its response shape`)
+      }
+      assert.deepEqual(result.body.hrProfiles, [])
+      assert.deepEqual(result.body.payroll, [])
+      if (token === hrToken || token === technicianToken) {
+        assert.deepEqual(result.body.leads, [])
+        assert.deepEqual(result.body.applications, [])
+      }
+    }
+    assert.equal(reads.length, 0)
+  } finally {
+    crmModel.findResources = original
+  }
+})
+
+test('dashboard summary and module views retain role-scoped CRM results', async () => {
+  const hrToken = (await signIn('hr.manager', 'HR_Manager_Password_123!')).token
+  const legacy = await request('/api/crm', { token: adminToken })
+  const summary = await request('/api/crm/summary', { token: adminToken })
+  assert.equal(summary.response.status, 200)
+  assert.equal(summary.body.totalLeads, legacy.body.leads.length)
+  assert.equal(summary.body.convertedLeads, legacy.body.leads.filter((lead) => lead.status === 'Converted').length)
+  assert.equal(summary.body.totalServices, legacy.body.maintenance.length)
+  assert.equal(summary.body.pendingServices, legacy.body.maintenance.filter((ticket) => ticket.status === 'Pending').length)
+  assert.equal(summary.body.completedServices, legacy.body.maintenance.filter((ticket) => ticket.status === 'Completed').length)
+  assert.deepEqual(summary.body.services.map((ticket) => ticket.id), legacy.body.maintenance.slice(0, 20).map((ticket) => ticket.id))
+  assert.equal((await request('/api/crm/summary', { token: employeeToken })).response.status, 403)
+  assert.equal((await request('/api/crm/views/unknown', { token: adminToken })).response.status, 404)
+
+  for (const [token, view, keys] of [
+    [adminToken, 'leads', ['leads']],
+    [adminToken, 'attendance', ['attendance', 'holidays']],
+    [adminToken, 'visits', ['visits']],
+    [adminToken, 'team', []],
+    [adminToken, 'maintenance', ['maintenance', 'installations', 'customers']],
+    [employeeToken, 'employee-dashboard', ['leads', 'attendance', 'applications', 'holidays', 'leaveRequests']],
+    [employeeToken, 'calling', ['leads', 'attendance']],
+    [employeeToken, 'maintenance', ['maintenance', 'installations', 'customers']],
+    [employeeToken, 'installations', ['installations', 'applications']],
+    [technicianToken, 'maintenance', ['maintenance', 'installations', 'customers']],
+    [technicianToken, 'attendance', ['attendance', 'holidays']],
+    [hrToken, 'attendance', ['attendance', 'holidays']],
+    [hrToken, 'visits', ['visits']],
+  ]) {
+    const all = await request('/api/crm', { token })
+    const result = await request(`/api/crm/views/${view}`, { token })
+    assert.equal(result.response.status, 200)
+    for (const key of keys) assert.deepEqual(result.body[key], all.body[key], `${view}: ${key}`)
+    assert.deepEqual(result.body.users, all.body.users)
+  }
+
+  const crmModel = require('./models/crmModel')
+  const previous = await crmModel.findResource('maintenance')
+  try {
+    await crmModel.updateResource('maintenance', (data) => {
+      data.maintenance.push(...Array.from({ length: 25 }, (_, index) => ({
+        id: `summary-test-${index}`, status: 'Completed', dueDate: '2026-01-01',
+      })))
+    })
+    const bounded = await request('/api/crm/summary', { token: adminToken })
+    assert.equal(bounded.body.totalServices, legacy.body.maintenance.length + 25)
+    assert.equal(bounded.body.services.length, 20)
+  } finally {
+    await crmModel.updateResource('maintenance', (data) => { data.maintenance = previous })
+  }
+})
+
+test('module views do not load unrelated CRM resources', async () => {
+  const crmModel = require('./models/crmModel')
+  const original = crmModel.findResources
+  const reads = []
+  crmModel.findResources = async (keys) => {
+    reads.push(keys)
+    return original(keys)
+  }
+  try {
+    assert.equal((await request('/api/crm/views/leads', { token: adminToken })).response.status, 200)
+    assert.deepEqual(reads, [['leads']])
+    reads.length = 0
+    assert.equal((await request('/api/crm/views/team', { token: adminToken })).response.status, 200)
+    assert.deepEqual(reads, [])
+  } finally {
+    crmModel.findResources = original
+  }
+})
+
 test('holiday calendar is managed by admin, visible to employees, and reflected in crm data', async () => {
   const employeeToken = (await signIn('DYNAMIC.EMPLOYEE@EXAMPLE.COM', 'Employee_Password_123!')).token
   const body = JSON.stringify({ date: '2031-01-26', name: 'Republic Day' })
